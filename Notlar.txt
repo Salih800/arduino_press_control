@@ -1,0 +1,21 @@
+Sorular:
+1- Pres yapıldığı sırada kapı veya kapak açılırsa pres olduğu yerde dursun mu yoksa başlangıç durumuna yani en yukarı kadar çıksın mı?
+
+2- Pres yapmak için doluluk oranı ne sıklıkla kontrol edilsin? Atıyorum 3dk boyunca doluluk oranı %70 ve üzeri olduğunda mı çalışsın sadece yoksa her doluluk %70 olduğunda beklemeden mi çalışsın?
+
+3- Diyelim ki doluluk sınırını geçmiş şuanda pres çalıştı ama sonrasında doluluk oranı yine yüksek bu durumda ne yapılmalı? Yine 2. sorudaki gibi belli aralıklarla mı çalışsın?
+
+4- Voltajı ölçebiliyoruz. Bu bilgi ile bişey yapalım mı? Atıyorum voltaj 22'nin altına düştüğünde düşük voltaj uyarısı verip cihazın çalışması engellensin mi?
+
+5- Sıcaklık sensöründen veri alabiliyoruz ama bu veri ne kadar doğru emin değilim. Bu tarafın biraz daha test edilmesi lazım. Ama düzgün veri aldığımız durumda bu veriyi sadece ekranda göstermek yeterli mi şuan için yoksa belli bir maks sıcaklık değerini geçtiğinde yine 4. sorudaki gibi bir uyarı versin mi?
+
+6- Sim modülüne bakmadım şuan için. Bu şuanki kodda önemli mi yoksa genel yapıyı çalıştırdıktan sonraki kısım mı olur? Şuan için de ekleyelim diyorsak biraz detaylı konuşmamız gerekebilir.
+
+
+Genel Durum:
+- Şuan için bir test kodu yazdım tüm sensörlerden gelen verilerin ekranda gözükeceği. Bu şekilde daha net görürüz durumu diye. Şuanda tüm sistem çalışıyor gibi (Sim ve sıcaklık modülü hariç). Yukarıdaki soruların cevaplarına göre sahada çalışacak sistemin kodunu hazırlayıp test edebiliriz.
+
+Notlar:
+- Mesafe sensörü 130 cm'e kadar ölçüm yapabiliyor sonrasında saçmalıyor. 130 cm ve sonrasındaki mesafelerde doluluğu 0 olacak şekilde ayarlayabiliriz.
+
+- Presin aşağı yönlü hareketi yaklaşık 26 saniye sürüyor. Yani bir pres işlemi yaklaşık olarak 26+1+26 olacak şekilde 53 saniye sürüyor

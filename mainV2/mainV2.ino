@@ -1,18 +1,20 @@
 // #include <SoftwareSerial.h> // SIM808 kütüphanesi
-#include <U8g2lib.h> // Ekran kütüphanesi
+#include <U8g2lib.h>          // Ekran kütüphanesi
 #include <Adafruit_VL53L0X.h> // Mesafe sensörü kütüphanesi
-#include <INA226.h> // Akım ve voltaj sensörü kütüphanesi
-#include <math.h> //loads the more advanced math functions
+#include <INA226.h>           // Akım ve voltaj sensörü kütüphanesi
+#include <math.h>             //loads the more advanced math functions
+
+// #include "pressClass.h" // Pres kütüphanesi
 
 // Pinler
-#define TEMPERATURE_PIN A0 // Sıcaklık sensörü 
-#define COVER_PIN 4 // Kapak sensörü pin
-#define DOOR_PIN 5 // Kapı sensörü pin
+#define TEMPERATURE_PIN A0  // Sıcaklık sensörü
+#define COVER_PIN 4         // Kapak sensörü pin
+#define DOOR_PIN 5          // Kapı sensörü pin
 #define MAGNETIC_LOCK_PIN 6 // Manyetik kilit pin
-#define PRESSUP_PIN 8 // Presi aşağı indirmek için kullanılan pin
-#define PRESSDOWN_PIN 9 // Presi yukarı çıkartmak için kullanılan pin
-#define SIM808_RX_PIN 10 // SIM808 RX pin
-#define SIM808_TX_PIN 11 // SIM808 TX pin
+#define PRESSUP_PIN 8       // Presi aşağı indirmek için kullanılan pin
+#define PRESSDOWN_PIN 9     // Presi yukarı çıkartmak için kullanılan pin
+#define SIM808_RX_PIN 10    // SIM808 RX pin
+#define SIM808_TX_PIN 11    // SIM808 TX pin
 
 // Sabitler
 #define SCREEN_WIDTH 128 // Ekran genişliği
@@ -24,26 +26,40 @@ const long PRESS_WAIT_TIME = PRESS_TIME + 1000;
 const long PRESS_UP_TIME = (PRESS_TIME * 2) + 1000;
 
 // Nesneler
-Adafruit_VL53L0X distanceSensor = Adafruit_VL53L0X();  // Mesafe sensörü
-INA226 powerSensor; // Akım ve voltaj sensörü
+Adafruit_VL53L0X distanceSensor = Adafruit_VL53L0X();                                            // Mesafe sensörü
+INA226 powerSensor;                                                                              // Akım ve voltaj sensörü
 U8G2_ST7920_128X64_F_SW_SPI u8g2(U8G2_R0, /* clock=*/13, /* data=*/3, /* CS=*/2, /* reset=*/12); // EKRAN MODELİ
 
+// pressClass myPress(PRESSDOWN_PIN); // Pres nesnesi
+
 // Değişkenler
-int doorState = 0; // Kapı durumu
-int coverState = 0; // Kapak durumu
+int doorState = 0;         // Kapı durumu
+int coverState = 0;        // Kapak durumu
 int magneticLockState = 0; // Manyetik kilit durumu
-int occupancy = 0; // Doluluk oranı
-int distance = 0; // Mesafe değişkeni
-float voltage = 0.0; // Voltaj değişkeni
-float current = 0.0; // Akım değişkeni
-float power = 0.0; // Güç değişkeni
-float temperature = 0.0; // Sıcaklık değişkeni
+int occupancy = 0;         // Doluluk oranı
+int distance = 0;          // Mesafe değişkeni
+int pressNeeded = 0;       // Presin gerekli olup olmadığı durumu
+int pressState = 0;        // Pres durumu
+int pressDownState = 0;    // Presin aşağı inme durumu
+int pressUpState = 1;      // Presin yukarı çıkma durumu
+
+float voltage = 0.0;      // Voltaj değişkeni
+float current = 0.0;      // Akım değişkeni
+float power = 0.0;        // Güç değişkeni
+float temperature = 0.0;  // Sıcaklık değişkeni
 float temperature2 = 0.0; // Sıcaklık değişkeni 2
 
-bool isPressing = false; // Pres durumu
+bool isPressing = false;      // Pres durumu
+bool isPressReady = false;    // Pres hazır durumu
+bool isPressCentered = false; // Presin ortalanma durumu
+bool isPressWorking = false;  // Presin çalışma durumu
+bool isPressPaused = true;   // Presin durdurulma durumu
+bool isPressDisabled = false; // Presin devre dışı bırakılma durumu
 
 // Zaman değişkenleri
-unsigned long pressTimer = 0; // Pres zamanlayıcısı
+unsigned long pressTimer = 0;       // Pres zamanlayıcısı
+unsigned long pressCenteringStartedTime = 0; // Presin ortalanma zamanlayıcısı
+unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
 
 // Fonksiyonlar
 double Thermister(int RawADC); // Sıcaklık fonksiyonu
@@ -52,11 +68,11 @@ void setup()
 {
     // Ekran başlatılıyor
     String startingText = "BASLATILIYOR...";
-    u8g2.begin(); 
+    u8g2.begin();
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_ncenB08_tr);
     int w = u8g2.getUTF8Width(startingText.c_str());
-    u8g2.drawStr((SCREEN_WIDTH/2) - (w/2), 32, startingText.c_str());
+    u8g2.drawStr((SCREEN_WIDTH / 2) - (w / 2), 32, startingText.c_str());
     u8g2.sendBuffer();
 
     // Pin modları ayarlanıyor
@@ -68,7 +84,7 @@ void setup()
 
     // Manyetik kilit varsayılan olarak açık
     digitalWrite(MAGNETIC_LOCK_PIN, HIGH);
-    
+
     // Presler varsayılan olarak kapalı
     digitalWrite(PRESSDOWN_PIN, LOW);
     digitalWrite(PRESSUP_PIN, LOW);
@@ -81,15 +97,11 @@ void setup()
     // Serial port başlatılıyor
     Serial.begin(9600);
     Serial.println("Starting...");
-    
+
     // Mesafe sensörü başlatılıyor
     distanceSensor.begin();
 
     // Akım ve voltaj sensörü başlatılıyor
-    // INA.begin();
-    // INA.setMaxCurrentShunt(0.1, 0.005); // 0.1A, 0.005 ohm
-
-    // INA.configure(INA226_AVERAGES_1, INA226_BUS_CONV_TIME_1100US, INA226_SHUNT_CONV_TIME_1100US, INA226_MODE_SHUNT_BUS_CONT);
     powerSensor.begin();
     powerSensor.configure(INA226_AVERAGES_1, INA226_BUS_CONV_TIME_1100US, INA226_SHUNT_CONV_TIME_1100US, INA226_MODE_SHUNT_BUS_CONT);
     powerSensor.calibrate(0.01, 9);
@@ -97,52 +109,42 @@ void setup()
 
 void loop()
 {
-    Serial.print("Running: ");
-    Serial.println(millis());
-    
-    distance = readDistance();
-    Serial.print("Distance: ");
-    Serial.println(distance);
+    // Serial.print("Running: ");
+    // Serial.println(millis());
 
-    occupancy = checkOccupancy();
-    Serial.print("Occupancy: ");
-    Serial.println(occupancy);
+    // distance = readDistance();
+    // // Serial.print("Distance: ");
+    // // Serial.println(distance);
 
-    voltage = readVoltage();
-    Serial.print("Voltage: ");
-    Serial.println(voltage);
+    // occupancy = checkOccupancy();
+    // // Serial.print("Occupancy: ");
+    // // Serial.println(occupancy);
 
-    current = readCurrent();
-    Serial.print("Current: ");
-    Serial.println(current);
+    // voltage = readVoltage();
+    // // Serial.print("Voltage: ");
+    // // Serial.println(voltage);
 
-    power = readPower();
-    Serial.print("Power: ");
-    Serial.println(power);
+    // current = readCurrent();
+    // // Serial.print("Current: ");
+    // // Serial.println(current);
 
-    temperature = readTemperature();
-    Serial.print("Temperature: ");
-    Serial.println(temperature);
+    // power = readPower();
+    // // Serial.print("Power: ");
+    // // Serial.println(power);
 
-    temperature2 = Thermister(analogRead(TEMPERATURE_PIN));
-    Serial.print("Temperature2: ");
-    Serial.println(temperature2);
+    // temperature = readTemperature();
+    // // Serial.print("Temperature: ");
+    // // Serial.println(temperature);
 
-    // Pres zamanlayıcısı
-    if (!isPressing && occupancy >= 70 && checkPressReady()) {
-        Serial.println("Starting press...");
-        pressTimer = millis();
-        isPressing = true;
-        digitalWrite(MAGNETIC_LOCK_PIN, LOW);
-        startPress();
-    }
-    else if (isPressing && checkPressReady()) {
-        Serial.println("Continuing press...");
-        startPress();
-    }
-    else {
-        stopPress();
-    }
+    // temperature2 = Thermister(analogRead(TEMPERATURE_PIN));
+    // // Serial.print("Temperature2: ");
+    // // Serial.println(temperature2);
+
+    updateVariables();        // Değişkenler güncelleniyor
+    printVariablesToSerial(); // Değişkenler seri porta yazdırılıyor
+
+    // Pres kontrol ediliyor
+    checkPress();
 
     // Ekran güncelleniyor
     u8g2.firstPage();
@@ -201,83 +203,315 @@ void loop()
         u8g2.print("Pres: ");
         u8g2.println(checkPressState());
 
+        u8g2.setCursor(60, 60);
+        u8g2.print("Pres Gerekli: ");
+        u8g2.println(checkPressNeeded());
+
     } while (u8g2.nextPage());
-    
+}
+
+// Değişkenleri güncelleme fonksiyonu
+void updateVariables()
+{
+    // Pin değerleri okunuyor
+    doorState = digitalRead(DOOR_PIN);
+    coverState = digitalRead(COVER_PIN);
+    magneticLockState = digitalRead(MAGNETIC_LOCK_PIN);
+
+    // Mesafe sensörü okunuyor
+    distance = readDistance();
+
+    // Doluluk oranı hesaplanıyor
+    occupancy = checkOccupancy();
+
+    // Akım ve voltaj sensörü okunuyor
+    voltage = readVoltage();
+    current = readCurrent();
+    power = readPower();
+
+    // Sıcaklık sensörü okunuyor
+    temperature = readTemperature();
+    temperature2 = Thermister(analogRead(TEMPERATURE_PIN));
+}
+
+// Değişkenleri yazdırma fonksiyonu
+void printVariablesToSerial()
+{
+    Serial.print("Distance: ");Serial.print(distance);Serial.print("mm");Serial.print(" | ");
+    Serial.print("Voltage: ");Serial.print(voltage);Serial.print("V");Serial.print(" | ");
+    Serial.print("Current: ");Serial.print(current);Serial.print("A");Serial.print(" | ");
+    Serial.print("Power: ");Serial.print(power);Serial.print("W");Serial.print(" | ");
+    Serial.print("Temperature: ");Serial.print(temperature);Serial.print("C");Serial.print(" | ");
+    Serial.print("Temperature2: ");Serial.print(temperature2);Serial.print("C");Serial.print(" | ");
+    Serial.print("Occupancy: ");Serial.print(occupancy);Serial.print("%");Serial.print(" | ");
+    Serial.print("Cover: ");Serial.print(checkCoverState());Serial.print(" | ");
+    Serial.print("Door: ");Serial.print(checkDoorState());Serial.print(" | ");
+    Serial.print("Magnetic Lock: ");Serial.print(checkMagneticLockState());
+    Serial.println();
+}
+
+// Pres kontrol fonksiyonu
+void checkPress()
+{
+    checkPressWorking(); // Presin çalışıp çalışmadığı kontrol ediliyor
+    checkPressReady();   // Presin hazır olup olmadığı kontrol ediliyor
+    // if (!isPressCentered)
+    // {
+    //     if (isPressReady)
+    //     {
+    //         Serial.println("Centering press...");
+    //         pressUp();
+    //         if (pressCenteringStartedTime == 0)
+    //         {
+    //             pressCenteringStartedTime = millis();
+    //         }
+    //         else if (millis() - pressCenteringStartedTime > 1000)
+    //         {
+    //             isPressCentered = !isPressWorking && !isPressPaused;
+    //         }
+    //     }
+    //     else
+    //     {
+    //         pressWait();
+    //     }
+    // }
+    // else
+    // {
+    //     if (millis() - pressCheckTime > 1000)
+    //     {
+    //         pressCheckTime = millis();
+    //         if (checkPressNeeded())
+    //         {
+    //             pressNeeded++;
+    //         }
+    //         else
+    //         {
+    //             pressNeeded = 0;
+    //         }
+    //     }
+    //     updatePressState(); // Pres durumu güncelleniyor
+    // }
+
+    if (millis() - pressCheckTime > 1000)
+    {
+        pressCheckTime = millis();
+        if (checkPressNeeded())
+        {
+            pressNeeded++;
+        }
+        else
+        {
+            pressNeeded = 0;
+        }
+    }
+    updatePressState(); // Pres durumu güncelleniyor
+    // if (!isPressCentered) {
+    //     isPressCentered = true;
+    // } else {
+    //     updatePressState(); // Pres durumu güncelleniyor
+    // }
+
+}
+
+// Presin durumunu güncelleme fonksiyonu
+void updatePressState() 
+{
+    if (pressDownState == 0 && pressUpState == 0 && !isPressWorking && isPressReady && pressNeeded > 1 && !isPressDisabled)
+    { // Pres duruyorsa ve pres hazırsa ve pres gerekliyse ve pres çalışmıyorsa ve pres devre dışı değilse
+        Serial.println("Starting press...");
+        pressDown();
+    }
+    else if (pressDownState == 1 && pressUpState == 0 && isPressWorking && isPressReady)
+    { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışıyorsa
+        Serial.println("Pressing down...");
+        pressDown();
+    }
+    else if (pressDownState == 1 && pressUpState == 0 && isPressWorking && !isPressReady)
+    { // Pres aşağı iniyorsa ve pres hazır değilse ve pres çalışıyorsa
+        Serial.println("Waiting for pressing down...");
+        pressWait();
+    }
+    else if (pressDownState == 1 && pressUpState == 0 && !isPressWorking && isPressReady && isPressPaused)
+    { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmuşsa
+        Serial.println("Continuing pressing down...");
+        pressDown();
+    }
+    else if (pressDownState == 1 && pressUpState == 0 && !isPressWorking && isPressReady && !isPressPaused)
+    { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmamışsa
+        Serial.println("Pressed down...");
+        pressUp();
+    }
+    else if (pressDownState == 0 && pressUpState == 1 && isPressWorking && isPressReady)
+    { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışıyorsa
+        Serial.println("Pressing up...");
+        pressUp();
+    }
+    else if (pressDownState == 0 && pressUpState == 1 && isPressWorking && !isPressReady)
+    { // Pres yukarı çıkıyorsa ve pres hazır değilse ve pres çalışıyorsa
+        Serial.println("Waiting for pressing up...");
+        pressWait();
+    }
+    else if (pressDownState == 0 && pressUpState == 1 && !isPressWorking && isPressReady && isPressPaused)
+    { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmuşsa
+        Serial.println("Continuing pressing up...");
+        pressUp();
+    }
+    else if (pressDownState == 0 && pressUpState == 1 && !isPressWorking && isPressReady && !isPressPaused)
+    { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmamışsa
+        Serial.println("Pressed up...");
+        pressStop();
+        pressNeeded = 0;
+        // if (checkPressNeeded()) {
+        //     isPressDisabled = true;
+        // }
+    }
+    else
+    {
+        Serial.println("Stopping press...!!!");
+    }
+}
+
+
+// Presin gerekli olup olmadığını kontrol eden fonksiyon
+bool checkPressNeeded()
+{
+    occupancy = checkOccupancy();
+    return occupancy >= 90;
 }
 
 // Pres yapmaya hazır mı kontrol eden fonksiyon
-bool checkPressReady() {
-    if (doorState == 1 && coverState == 0) {
-        return true;
+bool checkPressReady()
+{
+    if (doorState == 1 && coverState == 0)
+    {
+        isPressReady = true;
     }
-    else {
-        return false;
+    else
+    {
+        isPressReady = false;
     }
+    return isPressReady;
 }
 
 // Pres durumunu kontrol eden fonksiyon
-String checkPressState() {
-    int pressDownState = digitalRead(PRESSDOWN_PIN);
-    int pressUpState = digitalRead(PRESSUP_PIN);
-    if (pressDownState == 1 && pressUpState == 0) {
-        return "Asagi";
+String checkPressState()
+{
+    if (pressDownState == 1 && pressUpState == 0 && checkPressWorking() && checkPressReady())
+    {
+        pressState = 1;
+        return "Asagi iniyor";
     }
-    else if (pressDownState == 0 && pressUpState == 1) {
-        return "Yukari";
+    else if (pressDownState == 1 && pressUpState == 0 && !checkPressWorking() && !checkPressReady())
+    {
+        pressState = 2;
+        return "Asagi beklemede";
     }
-    else if (pressDownState == 1 && pressUpState == 1) {
-        return "Bekleme";
+    else if (pressDownState == 1 && pressUpState == 0 && !checkPressWorking() && checkPressReady())
+    {
+        pressState = 3;
+        return "Asagida";
     }
-    else {
+    else if (pressDownState == 0 && pressUpState == 1 && checkPressWorking() && checkPressReady())
+    {
+        pressState = 4;
+        return "Yukari cikiyor";
+    }
+    else if (pressDownState == 0 && pressUpState == 1 && !checkPressWorking() && !checkPressReady())
+    {
+        pressState = 5;
+        return "Yukari beklemede";
+    }
+    else if (pressDownState == 0 && pressUpState == 1 && !checkPressWorking() && checkPressReady())
+    {
+        pressState = 6;
+        return "Yukarida";
+    }
+    else if (pressDownState == 1 && pressUpState == 1 && !checkPressWorking() && checkPressReady())
+    {
+        pressState = 7;
+        return "Beklemede";
+    }
+    else if (pressDownState == 1 && pressUpState == 1 && !checkPressWorking() && !checkPressReady())
+    {
+        pressState = 8;
+        return "Kontrolde";
+    }
+    // else if (pressDownState == 0 && pressUpState == 0 && !checkPressWorking()) {
+    //     pressState = 0;
+    //     return "Durdu";
+    // }
+    else
+    {
+        pressState = 0;
         return "Kapali";
     }
 }
 
-// Pres durdurma fonksiyonu
-void stopPress() {
-    Serial.println("Stopping press...");
-    digitalWrite(PRESSDOWN_PIN, LOW);
-    digitalWrite(PRESSUP_PIN, LOW);
-    digitalWrite(MAGNETIC_LOCK_PIN, HIGH);
-    isPressing = false;
+// Presin çalışıp çalışmadığını kontrol eden fonksiyon
+bool checkPressWorking()
+{
+    float currentValue = readCurrent();
+    isPressWorking = currentValue > 4.0;
+    return isPressWorking;
 }
 
-// Pres yapma fonksiyonu
-void startPress() {
-    if (millis() - pressTimer <= PRESS_DOWN_TIME) {
-        digitalWrite(PRESSDOWN_PIN, HIGH);
-        digitalWrite(PRESSUP_PIN, LOW);
-    }
-    else if (millis() - pressTimer > PRESS_DOWN_TIME && millis() - pressTimer <= PRESS_WAIT_TIME) {
-        digitalWrite(PRESSDOWN_PIN, HIGH);
-        digitalWrite(PRESSUP_PIN, HIGH);
-    }
-    else if (millis() - pressTimer > PRESS_WAIT_TIME && millis() - pressTimer <= PRESS_UP_TIME) {
-        digitalWrite(PRESSDOWN_PIN, LOW);
-        digitalWrite(PRESSUP_PIN, HIGH);
-    }
-    else {
-        stopPress();
-    }
+// Presi aşağı indirme fonksiyonu
+void pressDown()
+{
+    digitalWrite(PRESSDOWN_PIN, HIGH);
+    digitalWrite(PRESSUP_PIN, LOW);
+    pressDownState = 1;
+    pressUpState = 0;
+    isPressPaused = false;
+}
+
+// Presi yukarı çıkartma fonksiyonu
+void pressUp()
+{
+    digitalWrite(PRESSDOWN_PIN, LOW);
+    digitalWrite(PRESSUP_PIN, HIGH);
+    pressDownState = 0;
+    pressUpState = 1;
+    isPressPaused = false;
+}
+
+// Presi bekletme fonksiyonu
+void pressWait()
+{
+    digitalWrite(PRESSDOWN_PIN, HIGH);
+    digitalWrite(PRESSUP_PIN, HIGH);
+    // pressDownState = 1;
+    // pressUpState = 1;
+    isPressPaused = true;
+}
+
+// Presi durdurma fonksiyonu
+void pressStop()
+{
+    digitalWrite(PRESSDOWN_PIN, LOW);
+    digitalWrite(PRESSUP_PIN, LOW);
+    pressDownState = 0;
+    pressUpState = 0;
+    isPressPaused = false;
 }
 
 // Mesafe sensörü ile doluluk oranı hesaplanıyor
 int checkOccupancy()
 {
-    distance = readDistance();
-    if (distance == -1) {
-        return -1;
+    // distance = readDistance();
+    const int fullDistance = 400;
+    const int emptyDistance = 1300;
+    const int distanceJump = (emptyDistance - fullDistance) / 20;
+
+    switch (distance)
+    {
+    case 0 ... fullDistance:
+        return 100;
+    case fullDistance + 1 ... emptyDistance:
+        return 100 - 5 * ((distance - fullDistance) / distanceJump);
+    default:
+        return 0;
     }
-    else if (distance <= 300) {
-        occupancy = 100;
-    }
-    else if (distance > 300 && distance <= 1200) {
-        occupancy = map(distance, 300, 1200, 100, 0);
-    }
-    else {
-        occupancy = 0;
-    }
-    return occupancy;
 }
 
 // Kapı durumu kontrol ediliyor
@@ -325,21 +559,18 @@ String checkMagneticLockState()
 // Voltaj okuma fonksiyonu
 float readVoltage()
 {
-    // return INA.getBusVoltage();
     return powerSensor.readBusVoltage();
 }
 
 // Akım okuma fonksiyonu
 float readCurrent()
 {
-    // return INA.getCurrent();
     return powerSensor.readShuntCurrent();
 }
 
 // Güç okuma fonksiyonu
 float readPower()
 {
-    // return INA.getPower();
     return powerSensor.readBusPower();
 }
 
@@ -369,11 +600,12 @@ float readTemperature()
 }
 
 // Sıcaklık fonksiyonu
-double Thermister(int RawADC) {  //Function to perform the fancy math of the Steinhart-Hart equation
- double Temp;
- Temp = log(((10240000/RawADC) - 10000));
- Temp = 1 / (0.001129148 + (0.000234125 + (0.0000000876741 * Temp * Temp ))* Temp );
- Temp = Temp - 273.15;              // Convert Kelvin to Celsius
-//  Temp = (Temp * 9.0)/ 5.0 + 32.0; // Celsius to Fahrenheit - comment out this line if you need Celsius
- return Temp;
+double Thermister(int RawADC)
+{ // Function to perform the fancy math of the Steinhart-Hart equation
+    double Temp;
+    Temp = log(((10240000 / RawADC) - 10000));
+    Temp = 1 / (0.001129148 + (0.000234125 + (0.0000000876741 * Temp * Temp)) * Temp);
+    Temp = Temp - 273.15; // Convert Kelvin to Celsius
+    // Temp = (Temp * 9.0)/ 5.0 + 32.0; // Celsius to Fahrenheit - comment out this line if you need Celsius
+    return Temp;
 }

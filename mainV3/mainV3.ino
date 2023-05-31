@@ -81,6 +81,39 @@ struct gspdata{
         float course;
     }GPSdata;
 
+enum SIM808_STATES {
+    SIM808_ClOSE,
+    SIM808_POWERED,
+    SIM808_INITIALIZED,
+    SIM808_JOINING_TO_NETWORK,
+    SIM808_JOINED_TO_NETWORK,
+    SIM808_TCP_NOT_CONNECTED,
+    SIM808_TCP_CONNECTED,
+    SIM808_REGISTERED_TO_SERVER,
+    SIM808_GPS_INITIALIZED,
+    SIM808_GPS_READY
+};
+
+enum SYSTEM_STATES {
+    DOOR_AND_COVER_CLOSED,
+    DOOR_CLOSED_COVER_OPENED,
+    DOOR_OPENED_COVER_CLOSED,
+    DOOR_AND_COVER_OPENED,
+    PRESSING_DOWN,
+    PRESSING_UP,
+    PRESSING_DOWN_WAITING,
+    PRESSING_UP_WAITING,
+    PRESS_RESETTING,
+    PRESS_STOPPED,
+    PRESS_PAUSED,
+    PRESS_DISABLED,
+};
+
+enum SYSTEM_STATES systemState = DOOR_AND_COVER_CLOSED;
+enum SIM808_STATES sim808State = SIM808_ClOSE;
+const char *imei = "IMEI:869170035238840";
+char buffer[1024];
+
 // Zaman değişkenleri
 unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
 unsigned long gpsCheckTime = 0;              // GPS kontrol zamanlayıcısı
@@ -151,6 +184,8 @@ void loop()
     {
         gpsCheckTime = millis();
         readGPS();
+        checkSIM808Status();
+        sendSystemStateToServer();
     }
 
     // Ekran güncelleniyor
@@ -711,4 +746,179 @@ String readSIM808(String cmd, String resp)
         }
     } while (data != "");
     return data;
+}
+
+void sendSystemStateToServer()
+{
+    if (sim808State == SIM808_ClOSE)
+    {
+        Serial.println("sim808State == SIM808_ClOSE");
+        // if (sim808.checkPowerUp())
+        if (sim808_check_with_cmd("AT\r\n", "OK\r\n", CMD))
+        {
+            sim808State = SIM808_POWERED;
+            Serial.println("sim808.checkPowerUp() successfull");
+        } else {
+            powerUpDownSIM808();
+            Serial.println("sim808.checkPowerUp() failed");
+            sim808State = SIM808_ClOSE;
+        }
+    }
+
+    if (sim808State == SIM808_POWERED)
+    {
+        sim808.disconnect();
+        if (sim808.init())
+        {
+            Serial.println("sim808.init() successfull");
+            sim808State = SIM808_INITIALIZED;
+        } else {
+            Serial.println("sim808.init() failed");
+            sim808State = SIM808_ClOSE;
+        }
+    }
+
+    if (sim808State == SIM808_INITIALIZED)
+    {
+        Serial.println("sim808State == SIM808_INITIALIZED");
+        // sim808_send_cmd("AT+CSTT=\"internet\",\"\",\"\"\r\n");
+        // sim808_read_buffer(buffer, sizeof(buffer), DEFAULT_TIMEOUT, DEFAULT_INTERCHAR_TIMEOUT);
+        // Serial.println("AT+CSTT=\"internet\",\"\",\"\"");
+        // Serial.println(buffer);
+        if (sim808.join(F("internet")))
+        {
+            Serial.println("sim808.join(F(\"internet\")) successfull");
+            sim808State = SIM808_JOINED_TO_NETWORK;
+        } else {
+            Serial.println("sim808.join(F(\"internet\")) failed");
+            sim808State = SIM808_INITIALIZED;
+        }
+    }
+
+    if (sim808State == SIM808_JOINED_TO_NETWORK)
+    {
+        Serial.println("sim808State == SIM808_JOINED_TO_NETWORK");
+        if (sim808.connect(TCP, TCP_HOST, TCP_PORT))
+        {
+            Serial.println("sim808.connect(TCP_HOST, TCP_PORT) successfull");
+            sim808State = SIM808_TCP_CONNECTED;
+        } else {
+            Serial.println("sim808.connect(TCP_HOST, TCP_PORT) failed");
+            // sim808State = SIM808_ClOSE;
+        }
+    }
+
+    if (sim808State == SIM808_TCP_CONNECTED)
+    {
+        Serial.println("sim808State == SIM808_TCP_CONNECTED");
+        String imei = "IMEI:" + getIMEI();
+        Serial.println(imei);
+        int ret = sim808.send(imei.c_str(), imei.length());
+        if (ret > 0)
+        {
+            sim808State = SIM808_REGISTERED_TO_SERVER;
+            Serial.println("sim808.send(imei, sizeof(imei) - 1) successfull");
+            Serial.print("Sent: ");Serial.println(ret);
+            // Serial.print("Recv: ");Serial.println(ret);
+        } else {
+            Serial.println("sim808.send(imei, sizeof(imei) - 1) failed");
+            // sim808State = SIM808_ClOSE;
+        }
+    }
+
+    if (sim808State == SIM808_REGISTERED_TO_SERVER)
+    {
+        // readGPS();
+        // sim808.send("K:OK", sizeof("K:OK") - 1);
+        // sim808.send(((String)millis()).c_str(), sizeof(String(millis())) - 1);
+        String systemState = getSystemState();
+        Serial.println("Sending system state to server...");
+        sim808.send(systemState.c_str(), systemState.length());
+        Serial.println("System state sent to server!");
+    }
+}
+
+String getSystemState()
+{
+    String systemState = "";
+    systemState += "Press: ";
+    systemState += checkPressState();
+    systemState += " | ";
+    systemState += "Cover: ";
+    systemState += checkCoverState();
+    systemState += " | ";
+    systemState += "Door: ";
+    systemState += checkDoorState();
+    systemState += " | ";
+    systemState += "Magnetic Lock: ";
+    systemState += checkMagneticLockState();
+    systemState += " | ";
+    systemState += "Occupancy: ";
+    systemState += String(occupancy);
+    systemState += "% | ";
+    systemState += "Voltage: ";
+    systemState += String(voltage);
+    systemState += " | ";
+    systemState += "Current: ";
+    systemState += String(current);
+    systemState += " | ";
+    systemState += "Temperature: ";
+    systemState += readTemperature();
+    systemState += "C | ";
+    systemState += "Latitude: ";
+    systemState += String(GPSdata.lat, 6);
+    systemState += " | ";
+    systemState += "Longitude: ";
+    systemState += String(GPSdata.lon, 6);
+    systemState += " | ";
+    systemState += "Local Date Time: ";
+    systemState += getLocalDateTime();
+
+    return systemState;
+}
+
+void checkSIM808Status()
+{
+    if (sim808State >= SIM808_TCP_CONNECTED)
+    {
+        String sim808Status = readSIM808("AT+CIPSTATUS\r\n", "STATE: ");
+        Serial.println("SIM808 Status: ");
+        Serial.println(sim808Status);
+
+        if (strstr(sim808Status.c_str(), "CONNECT OK")){
+            return;
+        } else {
+            Serial.println("SIM808 is not connected to server!");
+            sim808State = SIM808_ClOSE;
+        }
+    }
+}
+
+String getIMEI()
+{
+    String imei = "";
+    sim808_send_cmd("AT+GSN\r\n");
+    mySerial.readStringUntil('\n');
+    imei = mySerial.readStringUntil('\n');
+    return imei;
+}
+
+void checkSystemState()
+{
+    if (doorState == 1 && coverState == 0)
+    {
+        systemState = DOOR_AND_COVER_CLOSED;
+    }
+    else if (doorState == 0 && coverState == 0)
+    {
+        systemState = DOOR_OPENED_COVER_CLOSED;
+    }
+    else if (doorState == 1 && coverState == 1)
+    {
+        systemState = DOOR_AND_COVER_OPENED;
+    }
+    else if (doorState == 0 && coverState == 1)
+    {
+        systemState = DOOR_AND_COVER_OPENED;
+    }
 }

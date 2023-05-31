@@ -59,8 +59,31 @@ bool isPressWorking = false;  // Presin çalışma durumu
 bool isPressPaused = true;   // Presin durdurulma durumu
 bool isPressDisabled = false; // Presin devre dışı bırakılma durumu
 
+bool isSystemTimeSet = false;
+bool isGPSInitialized = false;
+struct gspdata{
+        uint16_t year;
+        uint8_t month;
+        uint8_t day;
+        uint8_t hour;
+        uint8_t minute;
+        uint8_t second;
+        uint8_t centisecond;
+        String UTCtime;
+        String localTime;
+        float lat;
+        float lat_dmm;
+        float lon;
+        float lon_dmm;
+        float speed_kph;
+        float speed_kmh;
+        float altitude;
+        float course;
+    }GPSdata;
+
 // Zaman değişkenleri
 unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
+unsigned long gpsCheckTime = 0;              // GPS kontrol zamanlayıcısı
 
 // Fonksiyonlar
 double Thermister(int RawADC); // Sıcaklık fonksiyonu
@@ -123,6 +146,13 @@ void loop()
     // Pres kontrol ediliyor
     checkPress();
 
+    //
+    if (millis() - gpsCheckTime > 5000 && !isPressWorking)
+    {
+        gpsCheckTime = millis();
+        readGPS();
+    }
+
     // Ekran güncelleniyor
     u8g2.firstPage();
     do
@@ -140,9 +170,10 @@ void loop()
         u8g2.setCursor(64, 5);u8g2.print("Doluluk: ");u8g2.print(checkOccupancy());u8g2.println(" %");
         u8g2.setCursor(64, 15);u8g2.print("Kapak: ");u8g2.println(checkCoverState());
         u8g2.setCursor(64, 25);u8g2.print("Kapi: ");u8g2.println(checkDoorState());
-        u8g2.setCursor(64, 35);u8g2.print("M.Kilit: ");u8g2.println(checkMagneticLockState());
+        u8g2.setCursor(75, 35);u8g2.print("M.Kilit: ");u8g2.println(checkMagneticLockState());
         u8g2.setCursor(64, 45);u8g2.print("Pres: ");u8g2.println(checkPressState());
-        u8g2.setCursor(64, 55);u8g2.print("Pres Gerekli: ");u8g2.println(checkPressNeeded());
+        // u8g2.setCursor(64, 55);u8g2.print("Pres Gerekli: ");u8g2.println(checkPressNeeded());
+        u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(",");u8g2.print(GPSdata.lon, 4);
 
     } while (u8g2.nextPage());
 }
@@ -505,6 +536,7 @@ String getLocalDateTime()
     return dateTime;
 }
 
+// Sayıyı 2 basamaklı stringe çevirme fonksiyonu
 String getDigits(int digits)
 {
     String digitsStr = "";
@@ -512,4 +544,171 @@ String getDigits(int digits)
         digitsStr += '0';
     digitsStr += String(digits);
     return digitsStr;
+}
+
+// SIM808 açma kapama fonksiyonu
+void powerUpDownSIM808()
+{
+    Serial.println("Resetting SIM808...");
+    digitalWrite(SIM808_POWER_PIN, HIGH);
+    delay(3000);
+    digitalWrite(SIM808_POWER_PIN, LOW);
+    powerUpGPS();
+}
+
+// SIM808 GPS açma fonksiyonu
+void powerUpGPS()
+{
+    Serial.println("Powering up GPS...");
+    if (sim808_check_with_cmd("AT+CGPSPWR=1\r\n", "OK\r\n", CMD)) // GPS'i açma
+    {
+        Serial.println("GPS powered up!");
+        isGPSInitialized = true;
+    }
+    else
+    {
+        Serial.println("GPS power up failed!");
+        isGPSInitialized = false;
+    }
+    // delay(100);
+}
+
+String convertToLocalDate(String time)
+{
+    // UTC formatındaki zamanı yerel saat formatına dönüştürme
+    String year = time.substring(0, 4);
+    String month = time.substring(4, 6);
+    String day = time.substring(6, 8);
+    String hour = time.substring(8, 10);
+    String minute = time.substring(10, 12);
+    String second = time.substring(12, 14);
+    if (!isSystemTimeSet && year.toInt() > 2022) {
+        setTime(hour.toInt() + 3, minute.toInt(), second.toInt(), day.toInt(), month.toInt(), year.toInt());
+        isSystemTimeSet = true;
+    }
+    String localDate = String(day) + "/" + String(month) + "/" + String(year);
+    String localTime = String(hour) + ":" + String(minute) + ":" + String(second);
+    return localDate + " " + localTime;
+}
+
+float convertToKilometersPerHour(String kphValue) {
+    // KPH formatındaki değeri KM/H formatına dönüştürme
+    float kph = kphValue.toFloat();
+    float kmh = kph * 1.852;
+    return kmh;
+}
+
+void parseGPSData(String gpsData) {
+    // İstenmeyen kısmı atlayarak veriyi parçalara bölme
+    int startIndex = gpsData.indexOf(":") + 1;
+    String data = gpsData.substring(startIndex);
+
+    // Parçaları virgül karakterine göre ayırma
+    int commaIndex = data.indexOf(",");
+    String mode = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    commaIndex = data.indexOf(",");
+    String latitude = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    commaIndex = data.indexOf(",");
+    String longitude = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    commaIndex = data.indexOf(",");
+    String altitude = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    commaIndex = data.indexOf(",");
+    String UTCTime = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    commaIndex = data.indexOf(",");
+    String TTFF = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    commaIndex = data.indexOf(",");
+    String num = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    commaIndex = data.indexOf(",");
+    String speed = data.substring(0, commaIndex);
+    data = data.substring(commaIndex + 1);
+
+    String course = data;
+
+    // GPSData struct'ına verileri kaydetme
+    GPSdata.year = UTCTime.substring(0, 4).toInt();
+    GPSdata.month = UTCTime.substring(4, 6).toInt();
+    GPSdata.day = UTCTime.substring(6, 8).toInt();
+    GPSdata.hour = UTCTime.substring(8, 10).toInt();
+    GPSdata.minute = UTCTime.substring(10, 12).toInt();
+    GPSdata.second = UTCTime.substring(12, 14).toInt();
+    GPSdata.centisecond = UTCTime.substring(14, 16).toInt();
+    GPSdata.UTCtime = UTCTime;
+    GPSdata.lat_dmm = latitude.toFloat();
+    GPSdata.lon_dmm = longitude.toFloat();
+    GPSdata.altitude = altitude.toFloat();
+    GPSdata.speed_kph = speed.toFloat();
+    GPSdata.course = course.toFloat();
+
+    // Dönüşümleri yapma        
+    GPSdata.lat = convertToDecimalDegrees(latitude);
+    GPSdata.lon = convertToDecimalDegrees(longitude);
+    GPSdata.speed_kmh = convertToKilometersPerHour(speed);
+    GPSdata.localTime = convertToLocalDate(UTCTime);
+
+    // Elde edilen verileri yazdırma
+    // Serial.println("Mode: " + mode);
+    // Serial.println("Latitude (dd): " + String(GPSdata.lat, 6));
+    // Serial.println("Longitude (dd): " + String(GPSdata.lon, 6));
+    // Serial.println("Altitude: " + altitude);
+    // Serial.println("UTC Time: " + UTCTime);
+    // Serial.println("Local Time: " + GPSdata.localTime);
+    // Serial.println("TTFF: " + TTFF);
+    // Serial.println("Num: " + num);
+    // Serial.println("Speed (km/h): " + String(GPSdata.speed_kmh, 2));
+    // Serial.println("Course: " + course);
+}
+
+float convertToDecimalDegrees(String dmmValue) {
+    // DMM formatındaki değeri ondalık dereceye dönüştürme
+    int degrees = dmmValue.substring(0, 2).toInt();
+    float minutes = dmmValue.substring(2).toFloat();
+    float decimalDegrees = degrees + (minutes / 60.0);
+    return decimalDegrees;
+}
+
+String readGPS()
+{
+    if (!isGPSInitialized)
+    {
+        powerUpGPS();
+    }
+    String gpsData;
+
+    gpsData = readSIM808("AT+CGPSINF=0\r\n", "CGPSINF: ");
+    // Serial.println("GPS DATA: ");
+    // Serial.println(gpsData);
+    parseGPSData(gpsData);
+    return gpsData;
+}
+
+String readSIM808(String cmd, String resp)
+{
+    String data = "";
+    sim808_send_cmd(cmd.c_str());
+    int i = 0;
+    do {
+        data = mySerial.readStringUntil('\n');
+        // Serial.print("Read: ");Serial.println(i++);
+        // Serial.println(data);
+        if (strstr(data.c_str(), resp.c_str()) != NULL)
+        {
+            // Serial.println("strstr(data, resp) != NULL");
+            return data;
+        }
+    } while (data != "");
+    return data;
 }

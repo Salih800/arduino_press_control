@@ -32,11 +32,8 @@
 #define MIN_OCCUPANCY_DISTANCE 400 // Minimum doluluk mesafesi
 #define MAX_OCCUPANCY_DISTANCE 1300 // Maksimum doluluk mesafesi
 #define OCCUPANCY_DISTANCE_JUMP 45 // Doluluk mesafesi artışı
-
-// const long PRESS_TIME = 27000; // Pres süresi
-// const long PRESS_DOWN_TIME = PRESS_TIME;
-// const long PRESS_WAIT_TIME = PRESS_TIME + 1000;
-// const long PRESS_UP_TIME = (PRESS_TIME * 2) + 1000;
+#define MIN_WORKING_VOLTAGE 19 // Minimum çalışma voltajı
+#define MAX_WORKING_TEMPERATURE 50 // Maksimum çalışma sıcaklığı
 
 // Nesneler
 Adafruit_VL53L0X distanceSensor = Adafruit_VL53L0X();                                            // Mesafe sensörü
@@ -46,9 +43,6 @@ SoftwareSerial mySerial(SIM808_TX_PIN, SIM808_RX_PIN);                          
 DFRobot_SIM808 sim808(&mySerial);                                                                // SIM808
 
 // Değişkenler
-int doorState = 0;         // Kapı durumu
-int coverState = 0;        // Kapak durumu
-int magneticLockState = 0; // Manyetik kilit durumu
 int occupancy = 0;         // Doluluk oranı
 int distance = 0;          // Mesafe değişkeni
 int pressNeeded = 0;       // Presin gerekli olup olmadığı durumu
@@ -69,6 +63,7 @@ bool isPressDisabled = false; // Presin devre dışı bırakılma durumu
 bool isSystemTimeSet = false; // Sistemin zamanının ayarlanma durumu
 bool isGPSInitialized = false; // GPS'in başlatılma durumu
 
+// GPS verileri
 struct gspdata{
         uint16_t year;
         uint8_t month;
@@ -89,6 +84,7 @@ struct gspdata{
         float course;
     }GPSdata;
 
+// SIM808 durumları
 enum SIM808_STATES {
     SIM808_POWER_DOWN,
     SIM808_POWER_UP,
@@ -102,6 +98,7 @@ enum SIM808_STATES {
     SIM808_REGISTERED_TO_SERVER,
 };
 
+// Pres durumları
 enum PRESS_STATES {
     PRESS_STOPPED,
     PRESS_STARTING,
@@ -113,8 +110,38 @@ enum PRESS_STATES {
     PRESS_IS_GOING_UP,
 };
 
-enum SIM808_STATES sim808State = SIM808_POWER_DOWN;
-enum PRESS_STATES pressState = PRESS_STOPPED;
+// Kapı durumları
+enum DOOR_STATES {
+    DOOR_CLOSED,
+    DOOR_OPENED,
+};
+
+// Kapak durumları
+enum COVER_STATES {
+    COVER_CLOSED,
+    COVER_OPENED,
+};
+
+// Manyetik kilit durumları
+enum MAGNETIC_LOCK_STATES {
+    MAGNETIC_LOCKED,
+    MAGNETIC_UNLOCKED,
+};
+
+// Ekranda ne yazacağını belirleyen durumlar
+enum DISPLAY_STATES {
+    DOOR_AND_COVER_CLOSED,
+    DOOR_CLOSED_COVER_OPENED,
+    DOOR_OPENED_COVER_CLOSED,
+    DOOR_AND_COVER_OPENED,
+    PRESS_WORKING,
+};
+
+enum SIM808_STATES sim808State = SIM808_POWER_DOWN; // SIM808 durumu
+enum PRESS_STATES pressState = PRESS_STOPPED;       // Pres durumu
+enum DOOR_STATES doorState = DOOR_CLOSED;         // Kapı durumu
+enum COVER_STATES coverState = COVER_CLOSED;        // Kapak durumu
+enum MAGNETIC_LOCK_STATES magneticLockState = MAGNETIC_UNLOCKED; // Manyetik kilit durumu
 char buffer[1024];
 
 // Zaman değişkenleri
@@ -202,11 +229,6 @@ void setup()
 
     // SIM808 güç pin varsayılan olarak kapalı
     digitalWrite(SIM808_POWER_PIN, LOW);
-
-    // Pin değerleri okunuyor
-    doorState = digitalRead(DOOR_PIN);
-    coverState = digitalRead(COVER_PIN);
-    magneticLockState = digitalRead(MAGNETIC_LOCK_PIN);
 
     // Sistem başlatılıyor
     delay(1000);
@@ -327,9 +349,9 @@ void loop()
 void updateVariables()
 {
     // Pin değerleri okunuyor
-    doorState = digitalRead(DOOR_PIN);
-    coverState = digitalRead(COVER_PIN);
-    magneticLockState = digitalRead(MAGNETIC_LOCK_PIN);
+    checkDoorState();
+    checkCoverState();
+    checkMagneticLockState();
 
     // Mesafe sensörü okunuyor
     distance = readDistance();
@@ -458,7 +480,7 @@ bool checkPressNeeded()
 // Pres yapmaya hazır mı kontrol eden fonksiyon
 bool checkPressReady()
 {
-    if (doorState == 1 && coverState == 0 && voltage > 19 && temperature < 50) // Kapı ve kapak kapalıysa ve voltaj 19V'dan büyükse ve sıcaklık 50C'dan küçükse
+    if (doorState == DOOR_CLOSED && coverState == COVER_CLOSED && voltage > MIN_WORKING_VOLTAGE && temperature < MAX_WORKING_TEMPERATURE) // Kapı ve kapak kapalıysa ve voltaj 19V'dan büyükse ve sıcaklık 50C'dan küçükse
     {
         isPressReady = true;
     }
@@ -565,21 +587,39 @@ void checkOccupancy()
 }
 
 // Kapı durumu kontrol ediliyor
-String getDoorState()
-{   
-    return doorState == 1 ? F("Kapali") : F("Acik");
+void checkDoorState()
+{
+    digitalRead(DOOR_PIN) == 1 ? doorState = DOOR_CLOSED : doorState = DOOR_OPENED;
 }
 
 // Kapak durumu kontrol ediliyor
+void checkCoverState()
+{
+    digitalRead(COVER_PIN) == 1 ? coverState = COVER_OPENED : coverState = COVER_CLOSED;
+}
+
+// Manyetik kilit durumu kontrol ediliyor
+void checkMagneticLockState()
+{
+    digitalRead(MAGNETIC_LOCK_PIN) == 1 ? magneticLockState = MAGNETIC_UNLOCKED : magneticLockState = MAGNETIC_LOCKED;
+}
+
+// Kapı durumu alınıyor
+String getDoorState()
+{   
+    return doorState == DOOR_CLOSED ? F("Kapali") : F("Acik");
+}
+
+// Kapak durumu alınıyor
 String getCoverState()
 {
-    return coverState == 1 ? F("Acik") : F("Kapali");
+    return coverState == COVER_OPENED ? F("Acik") : F("Kapali");
 }
 
 // Manyetik kilit durumu kontrol ediliyor
 String getMagneticLockState()
 {
-    return magneticLockState == 1 ? F("Acik") : F("Kilitli");
+    return magneticLockState == MAGNETIC_UNLOCKED ? F("Acik") : F("Kilitli");
 }
 
 // Voltaj okuma fonksiyonu

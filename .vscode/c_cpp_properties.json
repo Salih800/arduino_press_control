@@ -22,6 +22,9 @@
                 "C:\\Users\\Salih\\Documents\\Arduino\\libraries\\Adafruit_VL53L0X\\src",
                 "C:\\Users\\Salih\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\libraries\\Wire\\src",
                 "C:\\Users\\Salih\\Documents\\Arduino\\libraries\\INA226Lib\\src",
+                "C:\\Users\\Salih\\Documents\\Arduino\\libraries\\Time",
+                "C:\\Users\\Salih\\Documents\\Arduino\\libraries\\DFRobot_SIM808\\src",
+                "C:\\Users\\Salih\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\libraries\\SoftwareSerial\\src",
                 "C:\\Users\\Salih\\AppData\\Local\\Arduino15\\packages\\arduino\\hardware\\avr\\1.8.6\\libraries\\SPI\\src",
                 "c:\\users\\salih\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include",
                 "c:\\users\\salih\\appdata\\local\\arduino15\\packages\\arduino\\tools\\avr-gcc\\7.3.0-atmel3.6.1-arduino7\\lib\\gcc\\avr\\7.3.0\\include-fixed",
@@ -536,8 +539,7 @@
                 "__ATOMIC_RELEASE=3",
                 "__BUILTIN_AVR_FMUL=1",
                 "USBCON"
-            ],
-            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+            ]
         }
     ]
 }

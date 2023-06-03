@@ -27,7 +27,7 @@
 
 #define PRESS_CHECK_TIME 1000 // Pres kontrol zamanlayıcısı (Ne kadar sıklıkla presin yapılıp yapılmayacağı kontrol ediliyor)
 #define PRESS_NEEDED_COUNT 2000 / PRESS_CHECK_TIME // Presin normal başlama sayısı (? milisaniye boyunca doluluk oranı %?'ın üzerindeyse)
-#define MAX_PRESS_OFF_TIME 43200000 // Presin maksimum durma süresi (Presin durduktan sonra ne kadar süre sonra tekrar çalışacağı)
+#define MAX_PRESS_OFF_TIME 43200000UL // Presin maksimum durma süresi (Presin durduktan sonra ne kadar süre sonra tekrar çalışacağı)
 #define SIM808_CHECK_TIME 10000 // GPS kontrol zamanlayıcısı
 #define PRESS_WORKING_CURRENT 0.5 // Presin çalışma akımı
 
@@ -136,6 +136,8 @@ enum DISPLAY_STATES {
     DOOR_OPENED_COVER_CLOSED,
     DOOR_AND_COVER_OPENED,
     PRESS_WORKING,
+    OVERHEATED,
+    UNDERVOLTAGE,
 };
 
 enum SIM808_STATES sim808State = SIM808_POWER_OFF; // SIM808 durumu
@@ -143,11 +145,13 @@ enum PRESS_STATES pressState = PRESS_STOPPED;       // Pres durumu
 enum DOOR_STATES doorState = DOOR_CLOSED;         // Kapı durumu
 enum COVER_STATES coverState = COVER_CLOSED;        // Kapak durumu
 enum MAGNETIC_LOCK_STATES magneticLockState = MAGNETIC_UNLOCKED; // Manyetik kilit durumu
+enum DISPLAY_STATES displayState = DOOR_AND_COVER_CLOSED; // Ekranda ne yazacağını belirleyen durumlar
 char buffer[1024];
 
 // Zaman değişkenleri
 unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
 unsigned long sim808CheckTime = 0;              // GPS kontrol zamanlayıcısı
+unsigned long displayCheckTime = 0;              // Ekran kontrol zamanlayıcısı
 unsigned long lastPressTime = 0;             // Presin son çalışma zamanı
 
 // Fonksiyonlar
@@ -178,7 +182,7 @@ String getLocalDateTime(); // Zaman fonksiyonu
 String getDigits(const int number); // Sayıyı 2 basamaklı hale getirme fonksiyonu
 void powerUpDownSIM808(); // SIM808 güç açma kapama fonksiyonu
 bool powerUpGPS(); // GPS güç açma fonksiyonu
-String convertToLocalDate(const  String time); // UTC zamanı yerel zamana çevirme fonksiyonu
+String convertToLocalDate(const String time); // UTC zamanı yerel zamana çevirme fonksiyonu
 float convertToKilometersPerHour(const String kphValue); // Hızı km/saat cinsinden çevirme fonksiyonu
 void parseGPSData(const String gpsData); // GPS verilerini ayrıştırma fonksiyonu
 float convertToDecimalDegrees(const String dmmValue); // DMM cinsinden koordinatı ondalık dereceye çevirme fonksiyonu
@@ -331,6 +335,7 @@ void loop()
     }
 
     // Ekran güncelleniyor
+    // updateDisplay();
     u8g2.firstPage();
     do
     {
@@ -755,7 +760,8 @@ String convertToLocalDate(const String time)
     const String second = time.substring(12, 14);
     if (!isSystemTimeSet && year.toInt() > 2022) {
         Serial.println(F("Updating system time..."));
-        setTime(hour.toInt() + 3, minute.toInt(), second.toInt(), day.toInt(), month.toInt(), year.toInt());
+        setTime(hour.toInt(), minute.toInt(), second.toInt(), day.toInt(), month.toInt(), year.toInt());
+        adjustTime(3 * SECS_PER_HOUR); // UTC+3
         isSystemTimeSet = true;
         Serial.println(F("System time updated!"));
     }
@@ -1096,6 +1102,137 @@ String checkAvailableMessages()
         message += '\n';
     }
     return message;
+}
+
+void checkDisplayState()
+{
+    if (voltage < MIN_WORKING_VOLTAGE) {
+        displayState = UNDERVOLTAGE;
+    } else if (temperature > MAX_WORKING_TEMPERATURE) {
+        displayState = OVERHEATED;
+    } else if (doorState == DOOR_CLOSED && coverState == COVER_CLOSED && !isPressWorking) {
+        displayState = DOOR_AND_COVER_CLOSED;
+    } else if (doorState == DOOR_CLOSED && coverState == COVER_CLOSED && isPressWorking) {
+        displayState = PRESS_WORKING;
+    } else if (doorState == DOOR_OPENED && coverState == COVER_CLOSED) {
+        displayState = DOOR_OPENED_COVER_CLOSED;
+    } else if (doorState == DOOR_CLOSED && coverState == COVER_OPENED) {
+        displayState = DOOR_CLOSED_COVER_OPENED;
+    } else if (doorState == DOOR_OPENED && coverState == COVER_OPENED) {
+        displayState = DOOR_AND_COVER_OPENED;
+    }
+}
+
+// Ekranı güncelleme fonksiyonu
+void updateDisplay()
+{
+    checkDisplayState();
+    String displayMessage = "";
+    switch (displayState)
+    {
+    case UNDERVOLTAGE:
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,30,"DUSUK");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(27,50,"VOLTAJ");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(46,13,". .");
+        u8g2.drawStr(63,35,".");
+        u8g2.drawStr(75,13,". .");
+        u8g2.sendBuffer();
+        break;
+    case OVERHEATED:
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(25,30,"YUKSEK");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(17,50,"SICAKLIK");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(40,13,". .");
+        u8g2.sendBuffer();
+        break;
+    case DOOR_AND_COVER_CLOSED:
+        if (millis() - displayCheckTime < 5000)
+        {
+            u8g2.clearBuffer(); 
+            u8g2.setFont(u8g2_font_logisoso34_tf);  
+            u8g2.drawStr(5,41,"PENDIK"); 
+            u8g2.setFont(u8g2_font_logisoso34_tf); 
+            u8g2.drawStr(90,5,".");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(2,64,"BELEDIYESI");
+            u8g2.setFont(u8g2_font_logisoso34_tf); 
+            u8g2.drawStr(67,48,".");
+            u8g2.drawStr(116,48,".");
+            u8g2.sendBuffer();
+        } else if (millis() - displayCheckTime < 10000) {
+            displayMessage = getLocalDateTime();
+            u8g2.clearBuffer();
+            // u8g2.setFont(u8g2_font_6x13B_tr); //u8g2_font_t0_11_tr
+            u8g2.setFont(u8g2_font_6x13B_tr);
+            u8g2.drawStr(7, 20,displayMessage.c_str());
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(5, 40, "DOLULUK");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(15, 60, "%");
+            u8g2.drawStr(30, 60, String(occupancy).c_str());
+
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(69,40,"SICAKLIK ");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(75, 60, String((int)temperature).c_str());
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(95,53,"o");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(102,60,"C");  
+            
+            u8g2.sendBuffer();
+        } else {
+            displayCheckTime = millis();
+        }
+        break;
+    case PRESS_WORKING:
+        u8g2.clearBuffer();    
+        u8g2.setFont(u8g2_font_ncenB18_tr); 
+        u8g2.drawStr(25,30,"PRES");
+        u8g2.setFont(u8g2_font_ncenB14_tr); 
+        u8g2.drawStr(5,55,"YAPILIYOR");
+        u8g2.sendBuffer();
+        break;
+    case DOOR_OPENED_COVER_CLOSED:
+        u8g2.clearBuffer();                
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(40,30,"KAPI");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,50,"ACILDI");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(48,55,".");
+        u8g2.sendBuffer(); 
+        break;
+    case DOOR_CLOSED_COVER_OPENED:
+        u8g2.clearBuffer();                
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,30,"KAPAK");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,50,"ACILDI");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(48,55,".");
+        u8g2.sendBuffer(); 
+        break;
+    case DOOR_AND_COVER_OPENED:
+        u8g2.clearBuffer();                
+        u8g2.setFont(u8g2_font_ncenB10_tr);
+        u8g2.drawStr(3,30,"KAPAK VE KAPI");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,50,"ACILDI");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(48,55,".");
+        u8g2.sendBuffer();
+        break;
+    default:
+        break;
+    }
 }
 
 void drawProgressBar(const int x, const int y, const int width, const int height, const int progress)

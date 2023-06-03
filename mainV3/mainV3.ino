@@ -25,14 +25,16 @@
 #define TCP_HOST "185.98.62.213"
 #define TCP_PORT 8181
 
-#define PRESS_CHECK_TIME 1000 // Pres kontrol zamanlayıcısı
+#define PRESS_CHECK_TIME 1000 // Pres kontrol zamanlayıcısı (Ne kadar sıklıkla presin yapılıp yapılmayacağı kontrol ediliyor)
+#define PRESS_NEEDED_COUNT 2000 / PRESS_CHECK_TIME // Presin normal başlama sayısı (? milisaniye boyunca doluluk oranı %?'ın üzerindeyse)
+#define MAX_PRESS_OFF_TIME 43200000 // Presin maksimum durma süresi (Presin durduktan sonra ne kadar süre sonra tekrar çalışacağı)
 #define SIM808_CHECK_TIME 10000 // GPS kontrol zamanlayıcısı
 #define PRESS_WORKING_CURRENT 0.5 // Presin çalışma akımı
 
 #define MIN_OCCUPANCY_DISTANCE 400 // Minimum doluluk mesafesi
 #define MAX_OCCUPANCY_DISTANCE 1300 // Maksimum doluluk mesafesi
 #define OCCUPANCY_DISTANCE_JUMP 45 // Doluluk mesafesi artışı
-#define MIN_WORKING_VOLTAGE 19 // Minimum çalışma voltajı
+#define MIN_WORKING_VOLTAGE 22 // Minimum çalışma voltajı
 #define MAX_WORKING_TEMPERATURE 70 // Maksimum çalışma sıcaklığı
 
 #define SYSTEM_START_DELAY 1000 // Sistem başlatma gecikmesi
@@ -51,17 +53,14 @@ int pressNeeded = 0;       // Presin gerekli olup olmadığı durumu
 int pressDownState = 0;    // Presin aşağı inme durumu
 int pressUpState = 1;      // Presin yukarı çıkma durumu
 
-float voltage = 24.0;      // Voltaj değişkeni
-float current = 0.0;      // Akım değişkeni
-float power = 0.0;        // Güç değişkeni
-float temperature = 0.0;  // Sıcaklık değişkeni
+double voltage = 24.0;      // Voltaj değişkeni
+double current = 0.0;      // Akım değişkeni
+double power = 0.0;        // Güç değişkeni
+double temperature = 0.0;  // Sıcaklık değişkeni
 
-bool isPressing = false;      // Pres durumu
 bool isPressReady = false;    // Pres hazır durumu
-bool isPressCentered = false; // Presin ortalanma durumu
 bool isPressWorking = false;  // Presin çalışma durumu
 bool isPressPaused = true;   // Presin durdurulma durumu
-bool isPressDisabled = false; // Presin devre dışı bırakılma durumu
 bool isSystemTimeSet = false; // Sistemin zamanının ayarlanma durumu
 bool isGPSInitialized = false; // GPS'in başlatılma durumu
 
@@ -100,14 +99,16 @@ enum SIM808_STATES {
 
 // Pres durumları
 enum PRESS_STATES {
+    PRESS_DISABLED,
     PRESS_STOPPED,
+    PRESS_NEEDED,
     PRESS_STARTING,
-    PRESSED_DOWN,
-    PRESSED_UP,
-    PRESS_DOWN_WAITING,
-    PRESS_UP_WAITING,
     PRESS_IS_GOING_DOWN,
+    PRESS_DOWN_WAITING,
+    PRESSED_DOWN,
     PRESS_IS_GOING_UP,
+    PRESS_UP_WAITING,
+    PRESSED_UP,
 };
 
 // Kapı durumları
@@ -147,6 +148,7 @@ char buffer[1024];
 // Zaman değişkenleri
 unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
 unsigned long sim808CheckTime = 0;              // GPS kontrol zamanlayıcısı
+unsigned long lastPressTime = 0;             // Presin son çalışma zamanı
 
 // Fonksiyonlar
 void setup(); // Setup fonksiyonu
@@ -157,7 +159,7 @@ void checkPress(); // Pres kontrol fonksiyonu
 void updatePressState(); // Presin durumunu güncelleme fonksiyonu
 bool checkPressNeeded(); // Presin gerekli olup olmadığını kontrol eden fonksiyon
 bool checkPressReady(); // Pres yapmaya hazır mı kontrol eden fonksiyon
-String checkPressState(); // Pres durumu kontrol ediliyor
+String getPressState(); // Pres durumu kontrol ediliyor
 bool checkPressWorking(); // Presin çalışıp çalışmadığını kontrol eden fonksiyon
 void pressDown(); // Presi aşağı indirme fonksiyonu
 void pressUp(); // Presi yukarı çıkartma fonksiyonu
@@ -316,7 +318,7 @@ void loop()
     if (recvData != "")
     {
         Serial.println(F("Received data:"));
-        Serial.println(recvData);
+        Serial.println(recvData); // TODO: Sunucudan gelen verileri oku ve işle
     }
 
     // SIM808 kontrol ediliyor
@@ -325,7 +327,7 @@ void loop()
         sim808CheckTime = millis();
         readGPS();
         checkSIM808Status();
-        sendSystemStateToServer();
+        // sendSystemStateToServer(); // TODO: Delay kullanmadan sunucuya göndermeye çalış
     }
 
     // Ekran güncelleniyor
@@ -345,8 +347,7 @@ void loop()
         u8g2.setCursor(64, 15);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
         u8g2.setCursor(64, 25);u8g2.print(F("Kapi: "));u8g2.println(getDoorState());
         u8g2.setCursor(75, 35);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
-        u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(checkPressState());
-        // u8g2.setCursor(64, 55);u8g2.print(F("Pres Gerekli: "));u8g2.println(checkPressNeeded());
+        u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(getPressState());
         u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
 
     } while (u8g2.nextPage());
@@ -388,7 +389,7 @@ void printVariablesToSerial()
     Serial.print(F("Cover: "));Serial.print(getCoverState());Serial.print(F(" | "));
     Serial.print(F("Door: "));Serial.print(getDoorState());Serial.print(F(" | "));
     Serial.print(F("Magnetic Lock: "));Serial.print(getMagneticLockState());Serial.print(F(" | "));
-    Serial.print(F("Press: "));Serial.print(checkPressState());Serial.print(F(" | "));
+    Serial.print(F("Press: "));Serial.print(getPressState());Serial.print(F(" | "));
     Serial.print(F("SIM: "));Serial.print(getSIM808State());
     Serial.println();
 }
@@ -399,7 +400,7 @@ void checkPress()
     checkPressWorking(); // Presin çalışıp çalışmadığı kontrol ediliyor
     checkPressReady();   // Presin hazır olup olmadığı kontrol ediliyor
 
-    if (millis() - pressCheckTime > PRESS_CHECK_TIME && !isPressWorking)
+    if (millis() - pressCheckTime > PRESS_CHECK_TIME && pressState <= PRESS_STOPPED)
     {
         pressCheckTime = millis();
         if (checkPressNeeded())
@@ -408,16 +409,28 @@ void checkPress()
         }
         else
         {
+            pressState = PRESS_STOPPED;
             pressNeeded = 0;
         }
     }
+
+    if (pressState == PRESS_STOPPED)
+    {
+        pressNeeded > PRESS_NEEDED_COUNT ? pressState = PRESS_NEEDED : pressState = PRESS_STOPPED;
+    }
+
+    if (millis() - lastPressTime > MAX_PRESS_OFF_TIME && pressState <= PRESS_STOPPED)
+    {
+        pressState = PRESS_NEEDED;
+    }
+    
     updatePressState(); // Pres durumu güncelleniyor
 }
 
 // Presin durumunu güncelleme fonksiyonu
 void updatePressState() 
 {
-    if (pressDownState == 0 && pressUpState == 0 && !isPressWorking && isPressReady && pressNeeded > 1 && !isPressDisabled)
+    if (pressDownState == 0 && pressUpState == 0 && !isPressWorking && isPressReady && pressState == PRESS_NEEDED)
     { // Pres duruyorsa ve pres hazırsa ve pres gerekliyse ve pres çalışmıyorsa ve pres devre dışı değilse
         Serial.println(F("Starting press..."));
         pressDown();
@@ -471,10 +484,8 @@ void updatePressState()
         pressState = PRESSED_UP;
         pressStop();
         pressNeeded = 0;
-    }
-    else
-    {
-        pressState = PRESS_STOPPED;
+        lastPressTime = millis();
+        checkPressNeeded() ? pressState = PRESS_DISABLED : pressState = PRESS_STOPPED;
     }
 }
 
@@ -498,10 +509,16 @@ bool checkPressReady()
     return isPressReady;
 }
 
-String checkPressState()
+String getPressState()
 {
     switch (pressState)
     {
+    case PRESS_DISABLED:
+        return F("Devre disi");
+    case PRESS_STOPPED:
+        return F("Duruyor");
+    case PRESS_NEEDED:
+        return F("Gerekli");
     case PRESS_STARTING:
         return F("Baslatiliyor");
     case PRESS_IS_GOING_DOWN:
@@ -516,8 +533,6 @@ String checkPressState()
         return F("Yukari beklemede");
     case PRESSED_UP:
         return F("Yukarida");
-    case PRESS_STOPPED:
-        return F("Duruyor");
     default:
         return F("Kapali");
     }
@@ -623,7 +638,7 @@ String getCoverState()
     return coverState == COVER_OPENED ? F("Acik") : F("Kapali");
 }
 
-// Manyetik kilit durumu kontrol ediliyor
+// Manyetik kilit durumu alınıyor
 String getMagneticLockState()
 {
     return magneticLockState == MAGNETIC_UNLOCKED ? F("Acik") : F("Kilitli");
@@ -739,9 +754,10 @@ String convertToLocalDate(const String time)
     const String minute = time.substring(10, 12);
     const String second = time.substring(12, 14);
     if (!isSystemTimeSet && year.toInt() > 2022) {
-        Serial.println(F("Setting system time..."));
+        Serial.println(F("Updating system time..."));
         setTime(hour.toInt() + 3, minute.toInt(), second.toInt(), day.toInt(), month.toInt(), year.toInt());
         isSystemTimeSet = true;
+        Serial.println(F("System time updated!"));
     }
     const String localDate = day + F("/") + month + F("/") + year;
     const String localTime = hour + F(":") + minute + F(":") + second;
@@ -982,7 +998,7 @@ String getSystemState()
 {
     String systemState = F("K:OK | ");
     systemState += F("Pres: ");
-    systemState += checkPressState();
+    systemState += getPressState();
     systemState += F(" | ");
     systemState += F("Kapak: ");
     systemState += getCoverState();

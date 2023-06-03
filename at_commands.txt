@@ -1,0 +1,38 @@
+// Close connections
+AT+CIPSHUT
+
+// Set APN settings
+AT+CSTT="internet","",""
+
+// Bring up wireless connection
+AT+CIICR
+
+// Get local ip
+AT+CIFSR
+
+// Connect to server
+AT+CIPSTART="TCP","185.98.62.213",8181
+
+// Send message to server
+AT+CIPSEND=int(sizeof(message))
+IMEI:869170035238840
+
+// Check connect state
+AT+CIPSTATUS
+{
+STATE: CONNECT OK // Sunucuya bağlı 
+STATE: TCP CLOSED // Sunucu bağlantısı kesildi
+STATE: IP INITIAL // Sunucuya bağlı değil
+STATE: IP GPRSACT // Wireless açık
+STATE: IP STATUS // IP alındı
+}
+
+
+// Power GPS
+AT+CGPSPWR=1
+
+// Read GPRMC
+AT+CGPSINF=32
+
+// Print NMEA sentences
+AT+CGNSTST=1

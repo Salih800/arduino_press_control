@@ -196,6 +196,9 @@ String getIMEI(); // IMEI numarasını döndüren fonksiyon
 void printToDisplayScreen(const int x, const int y, const String text); // Ekrana yazı yazdırma fonksiyonu
 String recvFromServer(); // Sunucudan veri okuma fonksiyonu
 String checkAvailableMessages(); // Sunucudan gelen verileri okuma fonksiyonu
+void checkDisplayState(); // Ekranda ne yazacağını belirleyen fonksiyon
+void updateTestDisplay(); // Test ekranını güncelleme fonksiyonu
+void updateLiveDisplay(); // Canlı ekranı güncelleme fonksiyonu
 void drawProgressBar(const int x, const int y, const int width, const int height, const int percent); // İlerleme çubuğu çizme fonksiyonu
 
 void setup()
@@ -335,27 +338,8 @@ void loop()
     }
 
     // Ekran güncelleniyor
-    // updateDisplay();
-    u8g2.firstPage();
-    do
-    {
-        u8g2.setFont(u8g2_font_u8glib_4_tr); // u8g2_font_ncenB08_tr
-
-        u8g2.setCursor(0, 5);u8g2.print(F("Mesafe: "));u8g2.print(distance);u8g2.println(F(" mm"));
-        u8g2.setCursor(0, 15);u8g2.print(F("Voltaj: "));u8g2.print(voltage);u8g2.println(F(" V"));
-        u8g2.setCursor(0, 25);u8g2.print(F("Akim: "));u8g2.print(current);u8g2.println(F(" A"));
-        u8g2.setCursor(0, 35);u8g2.println(getLocalDateTime());
-        u8g2.setCursor(0, 45);u8g2.print(F("Sicaklik: "));u8g2.print(temperature);u8g2.println(F(" C"));
-        u8g2.setCursor(0, 55);u8g2.print(F("SIM: "));u8g2.println(getSIM808State());
-
-        u8g2.setCursor(64, 5);u8g2.print(F("Doluluk: "));u8g2.print(occupancy);u8g2.println(F(" %"));
-        u8g2.setCursor(64, 15);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
-        u8g2.setCursor(64, 25);u8g2.print(F("Kapi: "));u8g2.println(getDoorState());
-        u8g2.setCursor(75, 35);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
-        u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(getPressState());
-        u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
-
-    } while (u8g2.nextPage());
+    updateLiveDisplay();
+    // updateTestDisplay();
 }
 
 // Değişkenleri güncelleme fonksiyonu
@@ -1123,8 +1107,32 @@ void checkDisplayState()
     }
 }
 
+void updateTestDisplay()
+{
+    u8g2.firstPage();
+    do
+    {
+        u8g2.setFont(u8g2_font_u8glib_4_tr); // u8g2_font_ncenB08_tr
+
+        u8g2.setCursor(0, 5);u8g2.print(F("Mesafe: "));u8g2.print(distance);u8g2.println(F(" mm"));
+        u8g2.setCursor(0, 15);u8g2.print(F("Voltaj: "));u8g2.print(voltage);u8g2.println(F(" V"));
+        u8g2.setCursor(0, 25);u8g2.print(F("Akim: "));u8g2.print(current);u8g2.println(F(" A"));
+        u8g2.setCursor(0, 35);u8g2.println(getLocalDateTime());
+        u8g2.setCursor(0, 45);u8g2.print(F("Sicaklik: "));u8g2.print(temperature);u8g2.println(F(" C"));
+        u8g2.setCursor(0, 55);u8g2.print(F("SIM: "));u8g2.println(getSIM808State());
+
+        u8g2.setCursor(64, 5);u8g2.print(F("Doluluk: "));u8g2.print(occupancy);u8g2.println(F(" %"));
+        u8g2.setCursor(64, 15);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
+        u8g2.setCursor(64, 25);u8g2.print(F("Kapi: "));u8g2.println(getDoorState());
+        u8g2.setCursor(75, 35);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
+        u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(getPressState());
+        u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
+
+    } while (u8g2.nextPage());
+}
+
 // Ekranı güncelleme fonksiyonu
-void updateDisplay()
+void updateLiveDisplay()
 {
     checkDisplayState();
     String displayMessage = "";
@@ -1153,7 +1161,7 @@ void updateDisplay()
         u8g2.sendBuffer();
         break;
     case DOOR_AND_COVER_CLOSED:
-        if (millis() - displayCheckTime < 5000)
+        if (millis() - displayCheckTime < 10000)
         {
             u8g2.clearBuffer(); 
             u8g2.setFont(u8g2_font_logisoso34_tf);  
@@ -1166,7 +1174,7 @@ void updateDisplay()
             u8g2.drawStr(67,48,".");
             u8g2.drawStr(116,48,".");
             u8g2.sendBuffer();
-        } else if (millis() - displayCheckTime < 10000) {
+        } else if (millis() - displayCheckTime < 20000) {
             displayMessage = getLocalDateTime();
             u8g2.clearBuffer();
             // u8g2.setFont(u8g2_font_6x13B_tr); //u8g2_font_t0_11_tr

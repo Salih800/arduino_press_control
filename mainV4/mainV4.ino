@@ -25,15 +25,23 @@
 #define TCP_HOST "185.98.62.213"
 #define TCP_PORT 8181
 
-#define PRESS_CHECK_TIME 30000 // Pres kontrol zamanlayıcısı
-#define SIM808_CHECK_TIME 60000 // GPS kontrol zamanlayıcısı
+#define PRESS_CHECK_TIME 1000 // Pres kontrol zamanlayıcısı (Ne kadar sıklıkla presin yapılıp yapılmayacağı kontrol ediliyor)
+#define PRESS_NEEDED_COUNT 2000 / PRESS_CHECK_TIME // Presin normal başlama sayısı (? milisaniye boyunca doluluk oranı %?'ın üzerindeyse)
+#define MAX_PRESS_OFF_TIME 43200000UL // Presin maksimum durma süresi (Presin durduktan sonra ne kadar süre sonra tekrar çalışacağı)
+#define SIM808_CHECK_TIME 1000 // GPS kontrol zamanlayıcısı
+#define GPS_CHECK_TIME 30000 // GPS kontrol zamanlayıcısı
+#define MESSAGE_SEND_INTERVAL 60000 // Mesaj gönderme aralığı
+#define MESSAGE_SEND_TIMEOUT 60000 // Mesaj gönderme zaman aşımı
 #define PRESS_WORKING_CURRENT 0.5 // Presin çalışma akımı
 
 #define MIN_OCCUPANCY_DISTANCE 400 // Minimum doluluk mesafesi
 #define MAX_OCCUPANCY_DISTANCE 1300 // Maksimum doluluk mesafesi
 #define OCCUPANCY_DISTANCE_JUMP 45 // Doluluk mesafesi artışı
-#define MIN_WORKING_VOLTAGE 19 // Minimum çalışma voltajı
-#define MAX_WORKING_TEMPERATURE 50 // Maksimum çalışma sıcaklığı
+#define MIN_WORKING_VOLTAGE 22 // Minimum çalışma voltajı
+#define MAX_WORKING_TEMPERATURE 70 // Maksimum çalışma sıcaklığı
+#define SIM808_RESET_TIME 3600000UL // SIM808 reset zamanı
+
+#define SYSTEM_START_DELAY 1000 // Sistem başlatma gecikmesi
 
 // Nesneler
 Adafruit_VL53L0X distanceSensor = Adafruit_VL53L0X();                                            // Mesafe sensörü
@@ -49,19 +57,21 @@ int pressNeeded = 0;       // Presin gerekli olup olmadığı durumu
 int pressDownState = 0;    // Presin aşağı inme durumu
 int pressUpState = 1;      // Presin yukarı çıkma durumu
 
-float voltage = 24.0;      // Voltaj değişkeni
-float current = 0.0;      // Akım değişkeni
-float power = 0.0;        // Güç değişkeni
-float temperature = 0.0;  // Sıcaklık değişkeni
+double voltage = 24.0;      // Voltaj değişkeni
+double current = 0.0;      // Akım değişkeni
+double power = 0.0;        // Güç değişkeni
+double temperature = 0.0;  // Sıcaklık değişkeni
 
-bool isPressing = false;      // Pres durumu
 bool isPressReady = false;    // Pres hazır durumu
-bool isPressCentered = false; // Presin ortalanma durumu
 bool isPressWorking = false;  // Presin çalışma durumu
 bool isPressPaused = true;   // Presin durdurulma durumu
-bool isPressDisabled = false; // Presin devre dışı bırakılma durumu
 bool isSystemTimeSet = false; // Sistemin zamanının ayarlanma durumu
 bool isGPSInitialized = false; // GPS'in başlatılma durumu
+bool isMessageSent = true; // Mesajın gönderilme durumu
+
+String messagesToSend = ""; // Gönderilecek mesajlar
+String receivedMessages = ""; // Alınan mesajlar
+String IP = ""; // IP adresi
 
 // GPS verileri
 struct gspdata{
@@ -86,28 +96,32 @@ struct gspdata{
 
 // SIM808 durumları
 enum SIM808_STATES {
-    SIM808_POWER_DOWN,
-    SIM808_POWER_UP,
+    SIM808_POWER_OFF,
+    SIM808_POWER_ON,
+    SIM808_GPS_POWERED,
+    SIM808_GPS_READY,
     SIM808_SIM_NOT_READY,
     SIM808_SIM_READY,
     SIM808_INITIALIZED,
-    SIM808_JOINING_TO_NETWORK,
     SIM808_JOINED_TO_NETWORK,
-    SIM808_TCP_NOT_CONNECTED,
+    SIM808_WIRELESS_CONNECTED,
+    SIM808_IP_CONNECTED,
     SIM808_TCP_CONNECTED,
     SIM808_REGISTERED_TO_SERVER,
 };
 
 // Pres durumları
 enum PRESS_STATES {
+    PRESS_DISABLED,
     PRESS_STOPPED,
+    PRESS_NEEDED,
     PRESS_STARTING,
-    PRESSED_DOWN,
-    PRESSED_UP,
-    PRESS_DOWN_WAITING,
-    PRESS_UP_WAITING,
     PRESS_IS_GOING_DOWN,
+    PRESS_DOWN_WAITING,
+    PRESSED_DOWN,
     PRESS_IS_GOING_UP,
+    PRESS_UP_WAITING,
+    PRESSED_UP,
 };
 
 // Kapı durumları
@@ -135,18 +149,26 @@ enum DISPLAY_STATES {
     DOOR_OPENED_COVER_CLOSED,
     DOOR_AND_COVER_OPENED,
     PRESS_WORKING,
+    OVERHEATED,
+    UNDERVOLTAGE,
 };
 
-enum SIM808_STATES sim808State = SIM808_POWER_DOWN; // SIM808 durumu
+enum SIM808_STATES sim808State = SIM808_POWER_OFF; // SIM808 durumu
 enum PRESS_STATES pressState = PRESS_STOPPED;       // Pres durumu
 enum DOOR_STATES doorState = DOOR_CLOSED;         // Kapı durumu
 enum COVER_STATES coverState = COVER_CLOSED;        // Kapak durumu
 enum MAGNETIC_LOCK_STATES magneticLockState = MAGNETIC_UNLOCKED; // Manyetik kilit durumu
-char buffer[1024];
+enum DISPLAY_STATES displayState = DOOR_AND_COVER_CLOSED; // Ekranda ne yazacağını belirleyen durumlar
 
 // Zaman değişkenleri
 unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
-unsigned long sim808CheckTime = 0;              // GPS kontrol zamanlayıcısı
+unsigned long sim808CheckTime = 0;              // SIM808 kontrol zamanlayıcısı
+unsigned long gpsCheckTime = 0;              // GPS kontrol zamanlayıcısı
+unsigned long displayCheckTime = 0;              // Ekran kontrol zamanlayıcısı
+unsigned long lastPressTime = 0;             // Presin son çalışma zamanı
+unsigned long lastMessageSendTime = 0;       // Son mesaj gönderme zamanı
+unsigned long messageSentTime = 0;           // Mesajın gönderilme zamanı
+unsigned long sim808ResetTime = 0;           // SIM808 reset zamanı
 
 // Fonksiyonlar
 void setup(); // Setup fonksiyonu
@@ -157,7 +179,7 @@ void checkPress(); // Pres kontrol fonksiyonu
 void updatePressState(); // Presin durumunu güncelleme fonksiyonu
 bool checkPressNeeded(); // Presin gerekli olup olmadığını kontrol eden fonksiyon
 bool checkPressReady(); // Pres yapmaya hazır mı kontrol eden fonksiyon
-String checkPressState(); // Pres durumu kontrol ediliyor
+String getPressState(); // Pres durumu kontrol ediliyor
 bool checkPressWorking(); // Presin çalışıp çalışmadığını kontrol eden fonksiyon
 void pressDown(); // Presi aşağı indirme fonksiyonu
 void pressUp(); // Presi yukarı çıkartma fonksiyonu
@@ -174,9 +196,9 @@ uint16_t readDistance(); // Mesafe okuma fonksiyonu
 float readTemperature(); // Sıcaklık okuma fonksiyonu
 String getLocalDateTime(); // Zaman fonksiyonu
 String getDigits(const int number); // Sayıyı 2 basamaklı hale getirme fonksiyonu
-void powerUpDownSIM808(); // SIM808 güç açma kapama fonksiyonu
+// void powerUpDownSIM808(); // SIM808 güç açma kapama fonksiyonu
 bool powerUpGPS(); // GPS güç açma fonksiyonu
-String convertToLocalDate(const  String time); // UTC zamanı yerel zamana çevirme fonksiyonu
+String convertToLocalDate(const String time); // UTC zamanı yerel zamana çevirme fonksiyonu
 float convertToKilometersPerHour(const String kphValue); // Hızı km/saat cinsinden çevirme fonksiyonu
 void parseGPSData(const String gpsData); // GPS verilerini ayrıştırma fonksiyonu
 float convertToDecimalDegrees(const String dmmValue); // DMM cinsinden koordinatı ondalık dereceye çevirme fonksiyonu
@@ -185,11 +207,13 @@ String readSIM808(const String cmd, const String resp); // SIM808 komutu okuma f
 String getSIM808State(); // SIM808 durumunu döndüren fonksiyon
 void sendSystemStateToServer(); // Sistem durumu sunucuya gönderiliyor
 String getSystemState(); // Sistem durumunu döndüren fonksiyon
-void checkSIM808Status(); // SIM808 durumu kontrol ediliyor
 String getIMEI(); // IMEI numarasını döndüren fonksiyon
 void printToDisplayScreen(const int x, const int y, const String text); // Ekrana yazı yazdırma fonksiyonu
-String recvFromServer(); // Sunucudan veri okuma fonksiyonu
-String checkAvailableMessages(); // Sunucudan gelen verileri okuma fonksiyonu
+void checkAvailableMessages(); // Sunucudan gelen verileri okuma fonksiyonu
+void checkDisplayState(); // Ekranda ne yazacağını belirleyen fonksiyon
+void updateTestDisplay(); // Test ekranını güncelleme fonksiyonu
+void updateLiveDisplay(); // Canlı ekranı güncelleme fonksiyonu
+void drawProgressBar(const int x, const int y, const int width, const int height, const int percent); // İlerleme çubuğu çizme fonksiyonu
 
 void setup()
 {
@@ -235,6 +259,7 @@ void setup()
     u8g2.clearBuffer();
     u8g2.setFont(u8g2_font_u8glib_4_tr); // u8g2_font_ncenB08_tr   
     printToDisplayScreen(0, 5, F("Sistem Baslatiliyor..."));
+    drawProgressBar(0, SCREEN_HEIGHT - 5, SCREEN_WIDTH, 5, 0);
 
     // Mesafe sensörü başlatılıyor
     Serial.println(F("Distance Module..."));
@@ -247,11 +272,12 @@ void setup()
         Serial.println(F("Distance Module Started."));
         printToDisplayScreen(64, 15, F("Baslatildi."));
     }
+    drawProgressBar(0, SCREEN_HEIGHT - 5, SCREEN_WIDTH, 5, 25);
 
     // Akım ve voltaj sensörü başlatılıyor
     Serial.println(F("Starting Power Module..."));
     printToDisplayScreen(0, 25, F("Guc Modulu:"));
-    if (powerSensor.begin())
+    if (powerSensor.begin()) // TODO: Check if this is working
     {
         Serial.println(F("Power Module Started."));
         printToDisplayScreen(64, 25, F("Baslatildi."));
@@ -262,20 +288,24 @@ void setup()
         Serial.println(F("Power Module Failed."));
         printToDisplayScreen(64, 25, F("Baslatilamadi!"));
     }
+    drawProgressBar(0, SCREEN_HEIGHT - 5, SCREEN_WIDTH, 5, 50);
     
     // Sim808 başlatılıyor
     Serial.println(F("Starting SIM808..."));
     printToDisplayScreen(0, 35, F("SIM808:"));
-    if (sim808.checkPowerUp())
+    sim808_send_cmd("AT+CPIN?\r\n");
+    delay(1000);
+    if (mySerial.available())
     {
         Serial.println(F("SIM808 Started."));
         printToDisplayScreen(64, 35, F("Baslatildi."));
-        sim808State = SIM808_POWER_UP;
+        sim808State = SIM808_POWER_ON;
     } else {
         Serial.println(F("SIM808 Failed!"));
         printToDisplayScreen(64, 35, F("Baslatilamadi!"));
-        sim808State = SIM808_POWER_DOWN;
+        sim808State = SIM808_POWER_OFF;
     }
+    drawProgressBar(0, SCREEN_HEIGHT - 5, SCREEN_WIDTH, 5, 75);
 
     // SIM808 GPS başlatılıyor
     Serial.println(F("Starting GPS..."));
@@ -284,65 +314,49 @@ void setup()
     {
         Serial.println(F("GPS Started."));
         printToDisplayScreen(64, 45, F("Baslatildi."));
-        sim808State = SIM808_POWER_UP;
+        sim808State = SIM808_POWER_ON;
     } else {
         Serial.println(F("GPS Failed!"));
         printToDisplayScreen(64, 45, F("Baslatilamadi!"));
-        sim808State = SIM808_POWER_DOWN;
+        sim808State = SIM808_POWER_OFF;
     }
+    drawProgressBar(0, SCREEN_HEIGHT - 5, SCREEN_WIDTH, 5, 100);
 
     printToDisplayScreen(0, 55, F("Sistem Baslatildi."));
     Serial.println(F("System Started."));
-    delay(5000);
+    delay(SYSTEM_START_DELAY);
 }
 
 void loop()
 {
     updateVariables();        // Değişkenler güncelleniyor
-    printVariablesToSerial(); // Değişkenler seri porta yazdırılıyor
+    // printVariablesToSerial(); // Değişkenler seri porta yazdırılıyor
 
     // Pres kontrol ediliyor
     checkPress();
 
     // Gelen veriler okunuyor
-    const String recvData = checkAvailableMessages(); // Sunucudan gelen veriler okunuyor
-    if (recvData != "")
+    checkAvailableMessages(); // Sunucudan gelen veriler okunuyor
+    
+    // GPS kontrol ediliyor
+    if (millis() - gpsCheckTime > GPS_CHECK_TIME && !isPressWorking && isMessageSent)
     {
-        Serial.println(F("Received data:"));
-        Serial.println(recvData);
+        gpsCheckTime = millis();
+        readGPS();
+        // Serial.print(F("GPS check time: "));Serial.println(millis() - gpsCheckTime);
     }
 
     // SIM808 kontrol ediliyor
     if (millis() - sim808CheckTime > SIM808_CHECK_TIME && !isPressWorking)
     {
         sim808CheckTime = millis();
-        readGPS();
-        checkSIM808Status();
-        sendSystemStateToServer();
+        sendSystemStateToServer(); // TODO: Delay kullanmadan sunucuya göndermeye çalış
+        // Serial.print(F("SIM808 check time: "));Serial.println(millis() - sim808CheckTime);
     }
 
     // Ekran güncelleniyor
-    u8g2.firstPage();
-    do
-    {
-        u8g2.setFont(u8g2_font_u8glib_4_tr); // u8g2_font_ncenB08_tr
-
-        u8g2.setCursor(0, 5);u8g2.print(F("Mesafe: "));u8g2.print(distance);u8g2.println(F(" mm"));
-        u8g2.setCursor(0, 15);u8g2.print(F("Voltaj: "));u8g2.print(voltage);u8g2.println(F(" V"));
-        u8g2.setCursor(0, 25);u8g2.print(F("Akim: "));u8g2.print(current);u8g2.println(F(" A"));
-        u8g2.setCursor(0, 35);u8g2.println(getLocalDateTime());
-        u8g2.setCursor(0, 45);u8g2.print(F("Sicaklik: "));u8g2.print(temperature);u8g2.println(F(" C"));
-        u8g2.setCursor(0, 55);u8g2.print(F("SIM: "));u8g2.println(getSIM808State());
-
-        u8g2.setCursor(64, 5);u8g2.print(F("Doluluk: "));u8g2.print(occupancy);u8g2.println(F(" %"));
-        u8g2.setCursor(64, 15);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
-        u8g2.setCursor(64, 25);u8g2.print(F("Kapi: "));u8g2.println(getDoorState());
-        u8g2.setCursor(75, 35);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
-        u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(checkPressState());
-        // u8g2.setCursor(64, 55);u8g2.print(F("Pres Gerekli: "));u8g2.println(checkPressNeeded());
-        u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
-
-    } while (u8g2.nextPage());
+    // updateLiveDisplay();
+    updateTestDisplay();
 }
 
 // Değişkenleri güncelleme fonksiyonu
@@ -381,7 +395,7 @@ void printVariablesToSerial()
     Serial.print(F("Cover: "));Serial.print(getCoverState());Serial.print(F(" | "));
     Serial.print(F("Door: "));Serial.print(getDoorState());Serial.print(F(" | "));
     Serial.print(F("Magnetic Lock: "));Serial.print(getMagneticLockState());Serial.print(F(" | "));
-    Serial.print(F("Press: "));Serial.print(checkPressState());Serial.print(F(" | "));
+    Serial.print(F("Press: "));Serial.print(getPressState());Serial.print(F(" | "));
     Serial.print(F("SIM: "));Serial.print(getSIM808State());
     Serial.println();
 }
@@ -392,82 +406,92 @@ void checkPress()
     checkPressWorking(); // Presin çalışıp çalışmadığı kontrol ediliyor
     checkPressReady();   // Presin hazır olup olmadığı kontrol ediliyor
 
-    if (millis() - pressCheckTime > PRESS_CHECK_TIME && !isPressWorking)
+    if (millis() - pressCheckTime > PRESS_CHECK_TIME && pressState <= PRESS_STOPPED)
     {
-        pressCheckTime = millis();
+        pressCheckTime = millis(); // TODO: PRESS NEEDED
         if (checkPressNeeded())
         {
             pressNeeded++;
         }
         else
         {
+            pressState = PRESS_STOPPED;
             pressNeeded = 0;
         }
     }
+
+    if (pressState == PRESS_STOPPED)
+    {
+        pressNeeded > PRESS_NEEDED_COUNT ? pressState = PRESS_NEEDED : pressState = PRESS_STOPPED;
+    }
+
+    if (millis() - lastPressTime > MAX_PRESS_OFF_TIME && pressState <= PRESS_STOPPED)
+    {
+        pressState = PRESS_NEEDED;
+    }
+    
     updatePressState(); // Pres durumu güncelleniyor
 }
 
 // Presin durumunu güncelleme fonksiyonu
 void updatePressState() 
 {
-    if (pressDownState == 0 && pressUpState == 0 && !isPressWorking && isPressReady && pressNeeded > 1 && !isPressDisabled)
+    if (pressDownState == 0 && pressUpState == 0 && !isPressWorking && isPressReady && pressState == PRESS_NEEDED)
     { // Pres duruyorsa ve pres hazırsa ve pres gerekliyse ve pres çalışmıyorsa ve pres devre dışı değilse
-        Serial.println(F("Starting press..."));
+        // Serial.println(F("Starting press..."));
         pressDown();
         pressState = PRESS_STARTING;
     }
     else if (pressDownState == 1 && pressUpState == 0 && isPressWorking && isPressReady)
     { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışıyorsa
-        Serial.println(F("Pressing down..."));
+        // Serial.println(F("Pressing down..."));
         pressDown();
         pressState = PRESS_IS_GOING_DOWN;
     }
     else if (pressDownState == 1 && pressUpState == 0 && !isPressReady)
     { // Pres aşağı iniyorsa ve pres hazır değilse
-        Serial.println(F("Waiting for pressing down..."));
+        // Serial.println(F("Waiting for pressing down..."));
         pressWait();
         pressState = PRESS_DOWN_WAITING;
     }
     else if (pressDownState == 1 && pressUpState == 0 && !isPressWorking && isPressReady && isPressPaused)
     { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmuşsa
-        Serial.println(F("Continuing pressing down..."));
+        // Serial.println(F("Continuing pressing down..."));
         pressDown();
         pressState = PRESS_IS_GOING_DOWN;
     }
     else if (pressDownState == 1 && pressUpState == 0 && !isPressWorking && isPressReady && !isPressPaused)
     { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmamışsa
-        Serial.println(F("Pressed down..."));
+        // Serial.println(F("Pressed down..."));
         pressUp();
         pressState = PRESSED_DOWN;
     }
     else if (pressDownState == 0 && pressUpState == 1 && isPressWorking && isPressReady)
     { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışıyorsa
-        Serial.println(F("Pressing up..."));
+        // Serial.println(F("Pressing up..."));
         pressUp();
         pressState = PRESS_IS_GOING_UP;
     }
     else if (pressDownState == 0 && pressUpState == 1 && !isPressReady)
     { // Pres yukarı çıkıyorsa ve pres hazır değilse
-        Serial.println(F("Waiting for pressing up..."));
+        // Serial.println(F("Waiting for pressing up..."));
         pressWait();
         pressState = PRESS_UP_WAITING;
     }
     else if (pressDownState == 0 && pressUpState == 1 && !isPressWorking && isPressReady && isPressPaused)
     { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmuşsa
-        Serial.println(F("Continuing pressing up..."));
+        // Serial.println(F("Continuing pressing up..."));
         pressUp();
         pressState = PRESS_IS_GOING_UP;
     }
     else if (pressDownState == 0 && pressUpState == 1 && !isPressWorking && isPressReady && !isPressPaused)
     { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmamışsa
-        Serial.println(F("Pressed up..."));
+        // Serial.println(F("Pressed up..."));
         pressState = PRESSED_UP;
         pressStop();
         pressNeeded = 0;
-    }
-    else
-    {
-        pressState = PRESS_STOPPED;
+        lastPressTime = millis();
+        checkPressNeeded() ? pressState = PRESS_DISABLED : pressState = PRESS_STOPPED;
     }
 }
 
@@ -491,10 +515,16 @@ bool checkPressReady()
     return isPressReady;
 }
 
-String checkPressState()
+String getPressState()
 {
     switch (pressState)
     {
+    case PRESS_DISABLED:
+        return F("Devre disi");
+    case PRESS_STOPPED:
+        return F("Duruyor");
+    case PRESS_NEEDED:
+        return F("Gerekli");
     case PRESS_STARTING:
         return F("Baslatiliyor");
     case PRESS_IS_GOING_DOWN:
@@ -509,8 +539,6 @@ String checkPressState()
         return F("Yukari beklemede");
     case PRESSED_UP:
         return F("Yukarida");
-    case PRESS_STOPPED:
-        return F("Duruyor");
     default:
         return F("Kapali");
     }
@@ -616,7 +644,7 @@ String getCoverState()
     return coverState == COVER_OPENED ? F("Acik") : F("Kapali");
 }
 
-// Manyetik kilit durumu kontrol ediliyor
+// Manyetik kilit durumu alınıyor
 String getMagneticLockState()
 {
     return magneticLockState == MAGNETIC_UNLOCKED ? F("Acik") : F("Kilitli");
@@ -695,23 +723,24 @@ String getDigits(const int digits)
 }
 
 // SIM808 açma kapama fonksiyonu
-void powerUpDownSIM808()
-{
-    Serial.println(F("Resetting SIM808..."));
-    digitalWrite(SIM808_POWER_PIN, HIGH);
-    delay(3000);
-    digitalWrite(SIM808_POWER_PIN, LOW);
-    powerUpGPS();
-}
+// void powerUpDownSIM808()
+// {
+//     Serial.println(F("Resetting SIM808..."));
+//     digitalWrite(SIM808_POWER_PIN, HIGH);
+//     delay(3000);
+//     digitalWrite(SIM808_POWER_PIN, LOW);
+//     delay(1000);
+//     powerUpGPS();
+// }
 
 // SIM808 GPS açma fonksiyonu
 bool powerUpGPS()
 {
     Serial.println(F("Powering up GPS..."));
-    if (sim808_check_with_cmd("AT+CGPSPWR=1\r\n", "OK\r\n", CMD)) // GPS'i açma
-    {
+    if (sim808_check_with_cmd("AT+CGPSPWR=1\r\n", "OK\r\n", CMD) && sim808_check_with_cmd("AT+CGNSTST=0\r\n", "OK\r\n", CMD)) // GPS'i açma
+    {   
         Serial.println(F("GPS powered up!"));
-        isGPSInitialized = true;
+        isGPSInitialized = true; // TODO: GPS'in açık olup olmadığını kontrol et
     }
     else
     {
@@ -731,9 +760,11 @@ String convertToLocalDate(const String time)
     const String minute = time.substring(10, 12);
     const String second = time.substring(12, 14);
     if (!isSystemTimeSet && year.toInt() > 2022) {
-        Serial.println(F("Setting system time..."));
-        setTime(hour.toInt() + 3, minute.toInt(), second.toInt(), day.toInt(), month.toInt(), year.toInt());
+        Serial.println(F("Updating system time..."));
+        setTime(hour.toInt(), minute.toInt(), second.toInt(), day.toInt(), month.toInt(), year.toInt());
+        adjustTime(3 * SECS_PER_HOUR); // UTC+3
         isSystemTimeSet = true;
+        Serial.println(F("System time updated!"));
     }
     const String localDate = day + F("/") + month + F("/") + year;
     const String localTime = hour + F(":") + minute + F(":") + second;
@@ -752,6 +783,7 @@ float convertToKilometersPerHour(const String kphValue)
 void parseGPSData(const String gpsData) 
 {
     // İstenmeyen kısmı atlayarak veriyi parçalara bölme
+    Serial.print(F("GPS Data: "));Serial.println(gpsData);
     const int startIndex = gpsData.indexOf(F(":")) + 1;
     String data = gpsData.substring(startIndex);
 
@@ -809,7 +841,9 @@ void parseGPSData(const String gpsData)
     GPSdata.lat = convertToDecimalDegrees(latitude);
     GPSdata.lon = convertToDecimalDegrees(longitude);
     GPSdata.speed_kmh = convertToKilometersPerHour(speed);
-    GPSdata.localTime = convertToLocalDate(UTCTime);
+    if (UTCTime.length() == 18){
+        GPSdata.localTime = convertToLocalDate(UTCTime);
+    }
 }
 
 // DMM formatındaki değeri ondalık dereceye dönüştürme
@@ -827,44 +861,63 @@ void readGPS()
     {
         powerUpGPS();
     }
+    // sim808_send_cmd("AT+CGPSINF=0\r\n");
     const String gpsData = readSIM808("AT+CGPSINF=0\r\n", "CGPSINF: ");
-    parseGPSData(gpsData);
+    if (gpsData == "")
+    {
+        Serial.println(F("GPS data is empty!"));
+        return;
+    } else if (gpsData.length() < 70)
+    {
+        Serial.println(F("GPS data is invalid!"));
+    } else
+    {
+        parseGPSData(gpsData);
+        // Serial.println(F("GPS data is valid!"));
+    }
+    // mySerial.readStringUntil('\n');
+    // mySerial.readStringUntil('\n');
 }
 
 String readSIM808(const String cmd, const String resp)
 {
     String data = "";
     sim808_send_cmd(cmd.c_str());
-    // int i = 0;
     do {
         data = mySerial.readStringUntil('\n');
-        // Serial.print(F("Read: "));Serial.println(i++);
-        // Serial.println(data);
         if (strstr(data.c_str(), resp.c_str()) != NULL)
         {
-            // Serial.println(F("strstr(data, resp) != NULL"));
             return data;
+        } else {
+            receivedMessages += data;
         }
     } while (data != "");
     return data;
 }
 
+// SIM808 durumunu döndüren fonksiyon
 String getSIM808State()
 {
     switch (sim808State)
     {
-    case SIM808_POWER_DOWN:
-        return F("POWER DOWN");
-    case SIM808_POWER_UP:
-        return F("POWER UP");
+    case SIM808_POWER_OFF:
+        return F("POWER OFF");
+    case SIM808_POWER_ON:
+        return F("POWER ON");
+    case SIM808_GPS_POWERED:
+        return F("GPS OK");
+    case SIM808_GPS_READY:
+        return F("GPS READY");
     case SIM808_SIM_NOT_READY:
-        return F("SIM NOT");
+        return F("NO SIM");
     case SIM808_SIM_READY:
         return F("SIM READY");
     case SIM808_INITIALIZED:
-        return F("SIM OK");
+        return F("READY");
     case SIM808_JOINED_TO_NETWORK:
         return F("NET OK");
+    case SIM808_WIRELESS_CONNECTED ... SIM808_IP_CONNECTED:
+        return F("CONNECTING");
     case SIM808_TCP_CONNECTED:
         return F("TCP OK");
     case SIM808_REGISTERED_TO_SERVER:
@@ -874,96 +927,99 @@ String getSIM808State()
     }
 }
 
+// Sunucuya bağlanma ve sistem durumunu gönderme fonksiyonu
 void sendSystemStateToServer()
 {
-    if (sim808State == SIM808_POWER_DOWN)
+    if (sim808State == SIM808_POWER_OFF)
     {
-        if (sim808_check_with_cmd("AT\r\n", "OK\r\n", CMD))
-        {
-            sim808State = SIM808_POWER_UP;
-            Serial.println(F("sim808.checkPowerUp() successfull"));
-        } else {
-            powerUpDownSIM808();
-            Serial.println(F("sim808.checkPowerUp() failed"));
-            sim808State = SIM808_POWER_DOWN;
-        }
+        sim808_send_cmd("AT+CFUN=1\r\n");
     }
 
-    if (sim808State == SIM808_POWER_UP)
+    if (sim808State == SIM808_POWER_ON)
     {
-        if (sim808.checkSIMStatus())
-        {
-            Serial.println(F("sim808.checkSIMStatus() successfull"));
-            sim808State = SIM808_SIM_READY;
-        } else {
-            Serial.println(F("sim808.checkSIMStatus() failed"));
-            sim808State = SIM808_SIM_NOT_READY;
-        }
+        sim808_send_cmd("AT+CGPSPWR=1\r\n");
+    }
+
+    if (sim808State == SIM808_GPS_POWERED) {
+        sim808_send_cmd("AT+CGNSTST=0\r\n");
+    }
+    
+    if (sim808State == SIM808_GPS_READY || sim808State == SIM808_SIM_NOT_READY) 
+    {
+        sim808_send_cmd("AT+CPIN?\r\n");
     }
 
     if (sim808State == SIM808_SIM_READY)
     {
-        sim808.disconnect();
-        if (sim808.init())
-        {
-            Serial.println(F("sim808.init() successfull"));
-            sim808State = SIM808_INITIALIZED;
-        } else {
-            Serial.println(F("sim808.init() failed"));
-            sim808State = SIM808_POWER_DOWN;
-        }
+        sim808_send_cmd("AT+CIPSHUT\r\n");
+        messagesToSend = "";
     }
 
     if (sim808State == SIM808_INITIALIZED)
     {
-        if (sim808.join(F("internet")))
-        {
-            Serial.println(F("SIM808_JOINED_TO_NETWORK"));
-            sim808State = SIM808_JOINED_TO_NETWORK;
-        } else {
-            Serial.println(F("SIM808_NOT_JOINED_TO_NETWORK"));
-            sim808State = SIM808_INITIALIZED;
-        }
+        sim808_send_cmd("AT+CSTT=\"internet\",\"\",\"\"\r\n");
     }
 
     if (sim808State == SIM808_JOINED_TO_NETWORK)
     {
-        if (sim808.connect(TCP, TCP_HOST, TCP_PORT))
-        {
-            Serial.println(F("SIM808_TCP_CONNECTED"));
-            sim808State = SIM808_TCP_CONNECTED;
-        } else {
-            Serial.println(F("SIM808_TCP_NOT_CONNECTED"));
-            sim808State = SIM808_INITIALIZED;
-        }
+        sim808_send_cmd("AT+CIICR\r\n");
+    }
+
+    if (sim808State == SIM808_WIRELESS_CONNECTED)
+    {
+        sim808_send_cmd("AT+CIFSR\r\n");
+    }
+
+    if (sim808State == SIM808_IP_CONNECTED)
+    {
+        const String reg_cmd = "AT+CIPSTART=\"TCP\",\"" + String(TCP_HOST) + "\"," + String(TCP_PORT) + "\r\n";
+        sim808_send_cmd(reg_cmd.c_str());
     }
 
     if (sim808State == SIM808_TCP_CONNECTED)
     {
         const String imei = "IMEI:" + getIMEI();
-        Serial.println(imei);
-        const int ret = sim808.send(imei.c_str(), imei.length());
-        if (ret > 0)
-        {
-            sim808State = SIM808_REGISTERED_TO_SERVER;
-            Serial.println(F("SIM808_REGISTERED_TO_SERVER"));
-            Serial.print(F("Sent: "));Serial.println(ret);
-        } else {
-            Serial.println(F("SIM808_SERVER_NOT_RESPONDING"));
-            sim808State = SIM808_JOINED_TO_NETWORK;
-        }
+        messagesToSend += imei + "\n";
     }
 
     if (sim808State == SIM808_REGISTERED_TO_SERVER)
     {   
-        const String systemState = getSystemState();
-        Serial.println(F("Sending system state to server..."));
-        sim808.send(systemState.c_str(), systemState.length());
-        Serial.println(F("System state sent to server!"));
+        if (millis() - lastMessageSendTime > MESSAGE_SEND_INTERVAL) {
+            lastMessageSendTime = millis();
+            messagesToSend += getSystemState() + ("\n");
+        }
+    }
 
-        // Serial.println(F("Waiting for server response..."));
-        // const String response = recvFromServer();
-        // Serial.print(F("Server Response: "));Serial.println(response);
+    if (sim808State < SIM808_REGISTERED_TO_SERVER) {
+        if (millis() - sim808ResetTime > SIM808_RESET_TIME) {
+            Serial.println(F("Resetting SIM808..."));
+            // sim808_send_cmd("\r\n");
+            // mySerial.flush();
+            delay(100);
+            sim808_send_cmd("AT+CFUN=1,1\r\n");
+            delay(100);
+            sim808State = SIM808_POWER_OFF;
+            sim808ResetTime = millis();
+        }
+    } else {
+        sim808ResetTime = millis();
+    }
+
+    if (messagesToSend.length() > 0 && sim808State >= SIM808_TCP_CONNECTED) {
+        const char *messageToSend = strtok((char *)messagesToSend.c_str(), "\n");
+        const String message = String(messageToSend);
+        if (message && isMessageSent && !isPressWorking) {
+            isMessageSent = false;
+            messagesToSend = messagesToSend.substring(message.length() + 1);
+            // Serial.print(F("Message to send: "));Serial.println(message);
+            Serial.print(message.length());Serial.println(F(" bytes"));
+            if (sim808.send(message.c_str(), message.length()) == 0) {
+                sim808State = SIM808_SIM_READY;
+                isMessageSent = true;
+                Serial.println(F("Message could not be sent!"));
+            }
+            messageSentTime = millis();
+        }
     }
 }
 
@@ -972,7 +1028,7 @@ String getSystemState()
 {
     String systemState = F("K:OK | ");
     systemState += F("Pres: ");
-    systemState += checkPressState();
+    systemState += getPressState();
     systemState += F(" | ");
     systemState += F("Kapak: ");
     systemState += getCoverState();
@@ -1007,23 +1063,7 @@ String getSystemState()
     return systemState;
 }
 
-void checkSIM808Status()
-{
-    if (sim808State >= SIM808_TCP_CONNECTED)
-    {
-        const String sim808Status = readSIM808("AT+CIPSTATUS\r\n", "STATE: ");
-        Serial.println(F("SIM808 Status: "));
-        Serial.println(sim808Status);
-
-        if (strstr(sim808Status.c_str(), "CONNECT OK")){
-            return;
-        } else {
-            Serial.println(F("SIM808 is not connected to server!"));
-            sim808State = SIM808_POWER_DOWN;
-        }
-    }
-}
-
+// IMEI numarasını döndüren fonksiyon
 String getIMEI()
 {
     sim808_send_cmd("AT+GSN\r\n");
@@ -1039,33 +1079,329 @@ void printToDisplayScreen(const int x, const int y, const String text)
     u8g2.sendBuffer();
 }
 
-String recvFromServer() 
+void checkAvailableMessages() 
 {
-    const unsigned long startTime = millis();
-    while (true) {
-        const int ret = sim808.recv(buffer, sizeof(buffer)-1);
-        if (ret <= 0){
-            Serial.println(F("fetch over..."));
-            break; 
+    unsigned long messageCheckTime = millis();
+    while (mySerial.available()) {
+        receivedMessages += mySerial.readStringUntil('\n') + F("\n");
+    } 
+    char *message = strtok((char *)receivedMessages.c_str(), "\n");
+
+    while (message)
+    {
+        Serial.print(F("New Message: "));Serial.println(message);
+        if (strstr(message, "+PDP: DEACT") != NULL || strstr(message, "CLOSED") != NULL || strstr(message, "+CPIN: NOT READY") != NULL) {
+            sim808State = SIM808_POWER_OFF;
+            Serial.println(F("SIM808_POWER_OFF"));
         }
-        buffer[ret] = '\0';
-        Serial.print(F("Recv: "));
-        Serial.print(ret);
-        Serial.print(F(" bytes: "));
-        Serial.println(buffer);
-        break;
+
+        if (strstr(message, "SEND OK") != NULL) { // TODO: Bu kısımı kontrol et
+            Serial.println(F("Message sent to server!"));
+            isMessageSent = true;
+        }
+
+        switch (sim808State){
+            case SIM808_POWER_OFF:
+                if (strstr(message, "OK") != NULL) {
+                    sim808State = SIM808_POWER_ON;
+                    Serial.println(F("SIM808_POWER_ON"));
+                }
+                break;
+            case SIM808_POWER_ON:
+                if (strstr(message, "OK") != NULL) {
+                    sim808State = SIM808_GPS_POWERED;
+                    Serial.println(F("SIM808_SIM_NOT_READY"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_POWER_OFF;
+                    Serial.println(F("SIM808_POWER_OFF"));
+                }
+                break;
+            case SIM808_GPS_POWERED:
+                if (strstr(message, "OK") != NULL) {
+                    sim808State = SIM808_GPS_READY;
+                    Serial.println(F("SIM808_SIM_NOT_READY"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_POWER_ON;
+                    Serial.println(F("SIM808_POWER_ON"));
+                }
+                break;
+            case SIM808_GPS_READY ... SIM808_SIM_NOT_READY:
+                if (strstr(message, "+CPIN: READY") != NULL) {
+                    sim808State = SIM808_SIM_READY;
+                    Serial.println(F("SIM808_SIM_READY"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_SIM_NOT_READY;
+                    Serial.println(F("SIM808_SIM_NOT_READY"));
+                }
+                break;
+            case SIM808_SIM_READY:
+                if (strstr(message, "SHUT OK") != NULL) {
+                    sim808State = SIM808_INITIALIZED;
+                    Serial.println(F("SIM808_INITIALIZED"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_SIM_NOT_READY;
+                    Serial.println(F("SIM808_SIM_NOT_READY"));
+                }
+                break;
+            case SIM808_INITIALIZED:
+                if (strstr(message, "OK") != NULL) {
+                    sim808State = SIM808_JOINED_TO_NETWORK;
+                    Serial.println(F("SIM808_JOINED_TO_NETWORK"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_SIM_READY;
+                    Serial.println(F("SIM808_CANNOT_JOIN_TO_NETWORK"));
+                }
+                break;
+            case SIM808_JOINED_TO_NETWORK:
+                if (strstr(message, "OK") != NULL) {
+                    sim808State = SIM808_WIRELESS_CONNECTED;
+                    Serial.println(F("SIM808_WIRELESS_CONNECTED"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_INITIALIZED;
+                    Serial.println(F("SIM808_CANNOT_BRING_UP_WIRELESS_CONNECTION"));
+                }
+                break;
+            case SIM808_WIRELESS_CONNECTED:
+                if (strstr(message, ".") != NULL) {
+                    sim808State = SIM808_IP_CONNECTED;
+                    IP = message;
+                    Serial.println(F("SIM808_IP_CONNECTED"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_JOINED_TO_NETWORK;
+                    Serial.println(F("SIM808_CANNOT_GET_IP"));
+                }
+                break;
+            case SIM808_IP_CONNECTED:
+                if (strstr(message, "CONNECT OK") != NULL) {
+                    sim808State = SIM808_TCP_CONNECTED;
+                    Serial.println(F("SIM808_TCP_CONNECTED"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_WIRELESS_CONNECTED;
+                    Serial.println(F("SIM808_CANNOT_CONNECT_TO_SERVER"));
+                }
+                break;
+            case SIM808_TCP_CONNECTED:
+                if (strstr(message, "OK:1") != NULL) {
+                    sim808State = SIM808_REGISTERED_TO_SERVER;
+                    Serial.println(F("SIM808_REGISTERED_TO_SERVER"));
+                } else if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_IP_CONNECTED;
+                    Serial.println(F("SIM808_TCP_NOT_CONNECTED"));
+                }
+                break;
+            case SIM808_REGISTERED_TO_SERVER:
+                if (strstr(message, "ERROR") != NULL) {
+                    sim808State = SIM808_TCP_CONNECTED;
+                    Serial.println(F("SIM808_TCP_CONNECTION_LOST"));
+                } else if (strstr(message, "K:PRES DURUMU") != NULL) {
+                    messagesToSend += "PRES DURUMU:" + getPressState() + F("\n");
+                } else if (strstr(message, "K:PRESİ BAŞLAT") != NULL) {
+                    pressDownState = 1;
+                    pressUpState = 0;
+                    pressState = PRESS_STARTING;
+                    Serial.println(F("Press started!"));
+                    messagesToSend += "PRESİ BAŞLAT: OK\n";
+                } else if (strstr(message, "K:PRESİ BEKLET") != NULL) {
+                    pressWait();
+                    Serial.println(F("Press paused!"));
+                    messagesToSend += F("PRESİ BEKLET: OK\n");
+                } else if (strstr(message, "K:PRESİ DURDUR") != NULL) {
+                    pressDownState = 0;
+                    pressUpState = 1;
+                    messagesToSend += F("PRESİ DURDUR: OK\n");
+                } else if (strstr(message, "K:KONUM") != NULL) {
+                    const String location = String(GPSdata.lat, 6) + F(",") + String(GPSdata.lon, 6);
+                    messagesToSend += "KONUM: " + location + F("\n");
+                } else if (strstr(message, "K:SICAKLIK") != NULL) {
+                    messagesToSend += "SICAKLIK: " + String(temperature) + F("C\n");
+                } else if (strstr(message, "K:VOLTAJ") != NULL) {
+                    messagesToSend += "VOLTAJ: " + String(voltage) + F("V\n");
+                } else if (strstr(message, "K:DOLULUK") != NULL) {
+                    messagesToSend += ("DOLULUK: ") + String(occupancy) + F("%\n");
+                } else if (strstr(message, "K:IP") != NULL) {
+                    messagesToSend += "IP: " + IP + F("\n");
+                }
+                break;
+            default:
+                Serial.println(F("SIM808_UNKNOWN_STATE"));
+                break;
+        }
+
+        message = strtok(NULL, "\n");
     }
-    Serial.print(F("Response Time: "));Serial.println(millis() - startTime);
-    return String(buffer);
+
+    receivedMessages = "";
+
+    if (!isMessageSent && millis() - messageSentTime > MESSAGE_SEND_TIMEOUT) {
+        Serial.println(F("Message send timeout! Closing connection..."));
+        isMessageSent = true;
+        sim808State = SIM808_SIM_READY;
+    }
+
+    messageCheckTime = millis() - messageCheckTime;
+    if (messageCheckTime > 5) {
+        Serial.print(F("Message Check Time: "));Serial.println(messageCheckTime);
+    }
 }
 
-String checkAvailableMessages() 
-{   
-    String message = "";
-    while (mySerial.available())
-    {
-        message += mySerial.readStringUntil('\n');
-        message += '\n';
+void checkDisplayState()
+{
+    if (voltage < MIN_WORKING_VOLTAGE) {
+        displayState = UNDERVOLTAGE;
+    } else if (temperature > MAX_WORKING_TEMPERATURE) {
+        displayState = OVERHEATED;
+    } else if (doorState == DOOR_CLOSED && coverState == COVER_CLOSED && !isPressWorking) {
+        displayState = DOOR_AND_COVER_CLOSED;
+    } else if (doorState == DOOR_CLOSED && coverState == COVER_CLOSED && isPressWorking) {
+        displayState = PRESS_WORKING;
+    } else if (doorState == DOOR_OPENED && coverState == COVER_CLOSED) {
+        displayState = DOOR_OPENED_COVER_CLOSED;
+    } else if (doorState == DOOR_CLOSED && coverState == COVER_OPENED) {
+        displayState = DOOR_CLOSED_COVER_OPENED;
+    } else if (doorState == DOOR_OPENED && coverState == COVER_OPENED) {
+        displayState = DOOR_AND_COVER_OPENED;
     }
-    return message;
+}
+
+void updateTestDisplay()
+{
+    u8g2.firstPage();
+    do
+    {
+        u8g2.setFont(u8g2_font_u8glib_4_tr); // u8g2_font_ncenB08_tr
+
+        u8g2.setCursor(0, 5);u8g2.print(F("Mesafe: "));u8g2.print(distance);u8g2.println(F(" mm"));
+        u8g2.setCursor(0, 15);u8g2.print(F("Voltaj: "));u8g2.print(voltage);u8g2.println(F(" V"));
+        u8g2.setCursor(0, 25);u8g2.print(F("Akim: "));u8g2.print(current);u8g2.println(F(" A"));
+        u8g2.setCursor(0, 35);u8g2.println(getLocalDateTime());
+        u8g2.setCursor(0, 45);u8g2.print(F("Sicaklik: "));u8g2.print(temperature);u8g2.println(F(" C"));
+        u8g2.setCursor(0, 55);u8g2.print(F("SIM: "));u8g2.println(getSIM808State());
+
+        u8g2.setCursor(64, 5);u8g2.print(F("Doluluk: "));u8g2.print(occupancy);u8g2.println(F(" %"));
+        u8g2.setCursor(64, 15);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
+        u8g2.setCursor(64, 25);u8g2.print(F("Kapi: "));u8g2.println(getDoorState());
+        u8g2.setCursor(75, 35);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
+        u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(getPressState());
+        u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
+
+    } while (u8g2.nextPage());
+}
+
+// Ekranı güncelleme fonksiyonu
+void updateLiveDisplay()
+{
+    checkDisplayState();
+    String displayMessage = "";
+    switch (displayState)
+    {
+    case UNDERVOLTAGE:
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,30,"DUSUK");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(27,50,"VOLTAJ");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(46,13,". .");
+        u8g2.drawStr(63,35,".");
+        u8g2.drawStr(75,13,". .");
+        u8g2.sendBuffer();
+        break;
+    case OVERHEATED:
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(25,30,"YUKSEK");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(17,50,"SICAKLIK");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(40,13,". .");
+        u8g2.sendBuffer();
+        break;
+    case DOOR_AND_COVER_CLOSED:
+        if (millis() - displayCheckTime < 10000)
+        {
+            u8g2.clearBuffer(); 
+            u8g2.setFont(u8g2_font_logisoso34_tf);  
+            u8g2.drawStr(5,41,"PENDIK"); 
+            u8g2.setFont(u8g2_font_logisoso34_tf); 
+            u8g2.drawStr(90,5,".");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(2,64,"BELEDIYESI");
+            u8g2.setFont(u8g2_font_logisoso34_tf); 
+            u8g2.drawStr(67,48,".");
+            u8g2.drawStr(116,48,".");
+            u8g2.sendBuffer();
+        } else if (millis() - displayCheckTime < 20000) {
+            displayMessage = getLocalDateTime();
+            u8g2.clearBuffer();
+            // u8g2.setFont(u8g2_font_6x13B_tr); //u8g2_font_t0_11_tr
+            u8g2.setFont(u8g2_font_6x13B_tr);
+            u8g2.drawStr(7, 20,displayMessage.c_str());
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(5, 40, "DOLULUK");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(15, 60, "%");
+            u8g2.drawStr(30, 60, String(occupancy).c_str());
+
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(69,40,"SICAKLIK ");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(75, 60, String((int)temperature).c_str()); // TODO: BELLİ ARAKLIKTA YAZDIRILMALI
+            u8g2.setFont(u8g2_font_ncenB08_tr);
+            u8g2.drawStr(95,53,"o");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(102,60,"C");  
+            
+            u8g2.sendBuffer();
+        } else {
+            displayCheckTime = millis();
+        }
+        break;
+    case PRESS_WORKING:
+        u8g2.clearBuffer();    
+        u8g2.setFont(u8g2_font_ncenB18_tr); 
+        u8g2.drawStr(25,30,"PRES");
+        u8g2.setFont(u8g2_font_ncenB14_tr); 
+        u8g2.drawStr(5,55,"YAPILIYOR");
+        u8g2.sendBuffer();
+        break;
+    case DOOR_OPENED_COVER_CLOSED:
+        u8g2.clearBuffer();                
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(40,30,"KAPI");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,50,"ACILDI");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(48,55,".");
+        u8g2.sendBuffer(); 
+        break;
+    case DOOR_CLOSED_COVER_OPENED:
+        u8g2.clearBuffer();                
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,30,"KAPAK");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,50,"ACILDI");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(48,55,".");
+        u8g2.sendBuffer(); 
+        break;
+    case DOOR_AND_COVER_OPENED:
+        u8g2.clearBuffer();                
+        u8g2.setFont(u8g2_font_ncenB10_tr);
+        u8g2.drawStr(3,30,"KAPAK VE KAPI");
+        u8g2.setFont(u8g2_font_ncenB14_tr);
+        u8g2.drawStr(30,50,"ACILDI");
+        u8g2.setFont(u8g2_font_ncenB12_tr);
+        u8g2.drawStr(48,55,".");
+        u8g2.sendBuffer();
+        break;
+    default:
+        break;
+    }
+}
+
+void drawProgressBar(const int x, const int y, const int width, const int height, const int progress)
+{
+    u8g2.drawFrame(x, y, width, height);
+    u8g2.drawBox(x, y, width * progress / 100, height);
+    u8g2.sendBuffer();
 }

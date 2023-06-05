@@ -26,14 +26,16 @@
 #define TCP_PORT 8181
 
 #define PRESS_CHECK_TIME 1000 // Pres kontrol zamanlayıcısı (Ne kadar sıklıkla presin yapılıp yapılmayacağı kontrol ediliyor)
-#define PRESS_NEEDED_COUNT 2000 / PRESS_CHECK_TIME // Presin normal başlama sayısı (? milisaniye boyunca doluluk oranı %?'ın üzerindeyse)
+#define PRESS_NEEDED_COUNT 60000 / PRESS_CHECK_TIME // Presin normal başlama sayısı (? milisaniye boyunca doluluk oranı %?'ın üzerindeyse)
 #define MAX_PRESS_OFF_TIME 43200000UL // Presin maksimum durma süresi (Presin durduktan sonra ne kadar süre sonra tekrar çalışacağı)
 #define SIM808_CHECK_TIME 1000 // GPS kontrol zamanlayıcısı
 #define GPS_CHECK_TIME 30000 // GPS kontrol zamanlayıcısı
 #define MESSAGE_SEND_INTERVAL 60000 // Mesaj gönderme aralığı
 #define MESSAGE_SEND_TIMEOUT 60000 // Mesaj gönderme zaman aşımı
 #define PRESS_WORKING_CURRENT 0.5 // Presin çalışma akımı
+#define TEMPERATURE_CHECK_TIME 60000 // Sıcaklık kontrol zamanlayıcısı
 
+#define NEEDED_OCCUPANCY 90 // Gerekli doluluk oranı
 #define MIN_OCCUPANCY_DISTANCE 400 // Minimum doluluk mesafesi
 #define MAX_OCCUPANCY_DISTANCE 1300 // Maksimum doluluk mesafesi
 #define OCCUPANCY_DISTANCE_JUMP 45 // Doluluk mesafesi artışı
@@ -169,6 +171,9 @@ unsigned long lastPressTime = 0;             // Presin son çalışma zamanı
 unsigned long lastMessageSendTime = 0;       // Son mesaj gönderme zamanı
 unsigned long messageSentTime = 0;           // Mesajın gönderilme zamanı
 unsigned long sim808ResetTime = 0;           // SIM808 reset zamanı
+unsigned long systemLoopCounter = 0;          // Sistem döngü sayacı
+double systemFPS = 0;                  // Sistem FPS'i
+unsigned long temperatureCheckTime = 0;      // Sıcaklık kontrol zamanlayıcısı
 
 // Fonksiyonlar
 void setup(); // Setup fonksiyonu
@@ -329,6 +334,8 @@ void setup()
 
 void loop()
 {
+    systemLoopCounter++; // Sistem FPS sayacı arttırılıyor
+    systemFPS = (float)systemLoopCounter / (float)(millis()) * 1000.0; // Sistem FPS hesaplanıyor
     updateVariables();        // Değişkenler güncelleniyor
     // printVariablesToSerial(); // Değişkenler seri porta yazdırılıyor
 
@@ -347,10 +354,10 @@ void loop()
     }
 
     // SIM808 kontrol ediliyor
-    if (millis() - sim808CheckTime > SIM808_CHECK_TIME && !isPressWorking)
+    if (millis() - sim808CheckTime > SIM808_CHECK_TIME) // && !isPressWorking)
     {
         sim808CheckTime = millis();
-        sendSystemStateToServer(); // TODO: Delay kullanmadan sunucuya göndermeye çalış
+        sendSystemStateToServer();
         // Serial.print(F("SIM808 check time: "));Serial.println(millis() - sim808CheckTime);
     }
 
@@ -379,7 +386,11 @@ void updateVariables()
     power = readPower();
 
     // Sıcaklık sensörü okunuyor
-    temperature = readTemperature();
+    if (millis() - temperatureCheckTime > TEMPERATURE_CHECK_TIME || temperatureCheckTime == 0)
+    {
+        temperatureCheckTime = millis();
+        temperature = readTemperature();
+    }
 }
 
 // Değişkenleri seri porta yazdırma fonksiyonu
@@ -422,12 +433,10 @@ void checkPress()
 
     if (pressState == PRESS_STOPPED)
     {
-        pressNeeded > PRESS_NEEDED_COUNT ? pressState = PRESS_NEEDED : pressState = PRESS_STOPPED;
-    }
-
-    if (millis() - lastPressTime > MAX_PRESS_OFF_TIME && pressState <= PRESS_STOPPED)
-    {
-        pressState = PRESS_NEEDED;
+        if (millis() - lastPressTime > MAX_PRESS_OFF_TIME || pressNeeded > PRESS_NEEDED_COUNT)
+        {
+            pressState = PRESS_NEEDED;
+        }
     }
     
     updatePressState(); // Pres durumu güncelleniyor
@@ -498,7 +507,7 @@ void updatePressState()
 // Presin gerekli olup olmadığını kontrol eden fonksiyon
 bool checkPressNeeded()
 {
-    return occupancy >= 90;
+    return occupancy >= NEEDED_OCCUPANCY;
 }
 
 // Pres yapmaya hazır mı kontrol eden fonksiyon
@@ -923,7 +932,7 @@ String getSIM808State()
     case SIM808_REGISTERED_TO_SERVER:
         return F("SERVER OK");
     default:
-        return F("CLOSE");
+        return F("UNKNOWN");
     }
 }
 
@@ -1008,11 +1017,11 @@ void sendSystemStateToServer()
     if (messagesToSend.length() > 0 && sim808State >= SIM808_TCP_CONNECTED) {
         const char *messageToSend = strtok((char *)messagesToSend.c_str(), "\n");
         const String message = String(messageToSend);
-        if (message && isMessageSent && !isPressWorking) {
+        if (message && isMessageSent){ // && !isPressWorking) {
             isMessageSent = false;
             messagesToSend = messagesToSend.substring(message.length() + 1);
             // Serial.print(F("Message to send: "));Serial.println(message);
-            Serial.print(message.length());Serial.println(F(" bytes"));
+            // Serial.print(message.length());Serial.println(F(" bytes"));
             if (sim808.send(message.c_str(), message.length()) == 0) {
                 sim808State = SIM808_SIM_READY;
                 isMessageSent = true;
@@ -1081,7 +1090,7 @@ void printToDisplayScreen(const int x, const int y, const String text)
 
 void checkAvailableMessages() 
 {
-    unsigned long messageCheckTime = millis();
+    // unsigned long messageCheckTime = millis();
     while (mySerial.available()) {
         receivedMessages += mySerial.readStringUntil('\n') + F("\n");
     } 
@@ -1095,7 +1104,7 @@ void checkAvailableMessages()
             Serial.println(F("SIM808_POWER_OFF"));
         }
 
-        if (strstr(message, "SEND OK") != NULL) { // TODO: Bu kısımı kontrol et
+        if (strstr(message, "SEND OK") != NULL) {
             Serial.println(F("Message sent to server!"));
             isMessageSent = true;
         }
@@ -1199,15 +1208,13 @@ void checkAvailableMessages()
                     pressDownState = 1;
                     pressUpState = 0;
                     pressState = PRESS_STARTING;
+                    isPressPaused = true;
                     Serial.println(F("Press started!"));
                     messagesToSend += "PRESİ BAŞLAT: OK\n";
-                } else if (strstr(message, "K:PRESİ BEKLET") != NULL) {
-                    pressWait();
-                    Serial.println(F("Press paused!"));
-                    messagesToSend += F("PRESİ BEKLET: OK\n");
                 } else if (strstr(message, "K:PRESİ DURDUR") != NULL) {
                     pressDownState = 0;
                     pressUpState = 1;
+                    isPressPaused = true;
                     messagesToSend += F("PRESİ DURDUR: OK\n");
                 } else if (strstr(message, "K:KONUM") != NULL) {
                     const String location = String(GPSdata.lat, 6) + F(",") + String(GPSdata.lon, 6);
@@ -1238,10 +1245,10 @@ void checkAvailableMessages()
         sim808State = SIM808_SIM_READY;
     }
 
-    messageCheckTime = millis() - messageCheckTime;
-    if (messageCheckTime > 5) {
-        Serial.print(F("Message Check Time: "));Serial.println(messageCheckTime);
-    }
+    // messageCheckTime = millis() - messageCheckTime;
+    // if (messageCheckTime > 5) {
+    //     Serial.print(F("Message Check Time: "));Serial.println(messageCheckTime);
+    // }
 }
 
 void checkDisplayState()
@@ -1276,6 +1283,7 @@ void updateTestDisplay()
         u8g2.setCursor(0, 35);u8g2.println(getLocalDateTime());
         u8g2.setCursor(0, 45);u8g2.print(F("Sicaklik: "));u8g2.print(temperature);u8g2.println(F(" C"));
         u8g2.setCursor(0, 55);u8g2.print(F("SIM: "));u8g2.println(getSIM808State());
+        u8g2.setCursor(0, 62);u8g2.print(F("FPS: "));u8g2.println(systemFPS);
 
         u8g2.setCursor(64, 5);u8g2.print(F("Doluluk: "));u8g2.print(occupancy);u8g2.println(F(" %"));
         u8g2.setCursor(64, 15);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
@@ -1345,7 +1353,7 @@ void updateLiveDisplay()
             u8g2.setFont(u8g2_font_ncenB08_tr);
             u8g2.drawStr(69,40,"SICAKLIK ");
             u8g2.setFont(u8g2_font_ncenB12_tr);
-            u8g2.drawStr(75, 60, String((int)temperature).c_str()); // TODO: BELLİ ARAKLIKTA YAZDIRILMALI
+            u8g2.drawStr(75, 60, String((int)temperature).c_str());
             u8g2.setFont(u8g2_font_ncenB08_tr);
             u8g2.drawStr(95,53,"o");
             u8g2.setFont(u8g2_font_ncenB12_tr);

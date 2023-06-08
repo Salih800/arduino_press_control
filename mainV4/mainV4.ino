@@ -31,7 +31,7 @@
 #define SIM808_CHECK_TIME 1000 // GPS kontrol zamanlayıcısı
 #define GPS_CHECK_TIME 30000 // GPS kontrol zamanlayıcısı
 #define MESSAGE_SEND_INTERVAL 60000 // Mesaj gönderme aralığı
-#define MESSAGE_SEND_TIMEOUT 60000 // Mesaj gönderme zaman aşımı
+#define MESSAGE_SEND_TIMEOUT 10000 // Mesaj gönderme zaman aşımı
 #define PRESS_WORKING_CURRENT 0.5 // Presin çalışma akımı
 #define TEMPERATURE_CHECK_TIME 60000 // Sıcaklık kontrol zamanlayıcısı
 
@@ -41,7 +41,7 @@
 #define OCCUPANCY_DISTANCE_JUMP 45 // Doluluk mesafesi artışı
 #define MIN_WORKING_VOLTAGE 22 // Minimum çalışma voltajı
 #define MAX_WORKING_TEMPERATURE 70 // Maksimum çalışma sıcaklığı
-#define SIM808_RESET_TIME 3600000UL // SIM808 reset zamanı
+#define SIM808_RESET_TIME 300000UL // SIM808 reset zamanı
 
 #define SYSTEM_START_DELAY 1000 // Sistem başlatma gecikmesi
 
@@ -960,8 +960,11 @@ void sendSystemStateToServer()
 
     if (sim808State == SIM808_SIM_READY)
     {
+        Serial.println(F("Closing previous connection..."));
         sim808_send_cmd("AT+CIPSHUT\r\n");
         messagesToSend = "";
+        lastMessageSendTime = 0;
+        isMessageSent = true;
     }
 
     if (sim808State == SIM808_INITIALIZED)
@@ -993,7 +996,7 @@ void sendSystemStateToServer()
 
     if (sim808State == SIM808_REGISTERED_TO_SERVER)
     {   
-        if (millis() - lastMessageSendTime > MESSAGE_SEND_INTERVAL) {
+        if (millis() - lastMessageSendTime > MESSAGE_SEND_INTERVAL || lastMessageSendTime == 0) {
             lastMessageSendTime = millis();
             messagesToSend += getSystemState() + ("\n");
         }
@@ -1002,7 +1005,6 @@ void sendSystemStateToServer()
     if (sim808State < SIM808_REGISTERED_TO_SERVER) {
         if (millis() - sim808ResetTime > SIM808_RESET_TIME) {
             Serial.println(F("Resetting SIM808..."));
-            // sim808_send_cmd("\r\n");
             // mySerial.flush();
             delay(100);
             sim808_send_cmd("AT+CFUN=1,1\r\n");
@@ -1024,7 +1026,6 @@ void sendSystemStateToServer()
             // Serial.print(message.length());Serial.println(F(" bytes"));
             if (sim808.send(message.c_str(), message.length()) == 0) {
                 sim808State = SIM808_SIM_READY;
-                isMessageSent = true;
                 Serial.println(F("Message could not be sent!"));
             }
             messageSentTime = millis();
@@ -1241,7 +1242,6 @@ void checkAvailableMessages()
 
     if (!isMessageSent && millis() - messageSentTime > MESSAGE_SEND_TIMEOUT) {
         Serial.println(F("Message send timeout! Closing connection..."));
-        isMessageSent = true;
         sim808State = SIM808_SIM_READY;
     }
 
@@ -1291,6 +1291,7 @@ void updateTestDisplay()
         u8g2.setCursor(75, 35);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
         u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(getPressState());
         u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
+        u8g2.setCursor(64, 62);u8g2.print(F("mainv4"));
 
     } while (u8g2.nextPage());
 }

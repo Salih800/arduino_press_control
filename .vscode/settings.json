@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "*.embeddedhtml": "html",
+        "new": "cpp"
+    },
+    "todo-tree.tree.showBadges": true
+}

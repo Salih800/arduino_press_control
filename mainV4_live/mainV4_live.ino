@@ -362,8 +362,8 @@ void loop()
     }
 
     // Ekran güncelleniyor
-    // updateLiveDisplay();
-    updateTestDisplay();
+    updateLiveDisplay();
+    // updateTestDisplay();
 }
 
 // Değişkenleri güncelleme fonksiyonu

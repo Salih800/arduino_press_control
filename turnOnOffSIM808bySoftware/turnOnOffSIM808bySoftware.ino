@@ -1,20 +1,20 @@
-static const int PowerPin =9; //attached to pin DP9 of the GSM module
+#define POWER_PIN  7 //attached to pin DP9 of the GSM module
+#define DELAY_TIME 3000 //3 seconds
+
 
 void setup()
 {
-  pinMode(PowerPin, OUTPUT);
-  //to turn on the GSM module -software switch instead Power Key
-  digitalWrite(PowerPin, HIGH);
-  delay (1000);
-  digitalWrite (PowerPin, LOW);  
+  Serial.begin(9600);
   
-  delay (10000); //delay set for 10 seconds
+  pinMode(POWER_PIN, OUTPUT);
   
-  //to turn off the GSM module
-  digitalWrite(PowerPin, HIGH);
-  delay (3000);
-  digitalWrite (PowerPin, LOW);
-
+  Serial.println("Writing HIGH to pin: " + String(POWER_PIN));
+  digitalWrite(POWER_PIN, HIGH);
+  Serial.println("Waiting " + String(DELAY_TIME) + " milliseconds...");
+  delay (DELAY_TIME);
+  Serial.println("Writing LOW to pin: " + String(POWER_PIN));
+  digitalWrite (POWER_PIN, LOW);  
+  Serial.println("Done!");
 }
 
 void loop()

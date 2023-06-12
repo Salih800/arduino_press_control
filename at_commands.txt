@@ -16,6 +16,8 @@ AT+CIPSTART="TCP","185.98.62.213",8181
 // Send message to server
 AT+CIPSEND=int(sizeof(message))
 IMEI:869170035238840
+Cihaz No: 13
+IMEI:869170035237651
 
 // Check connect state
 AT+CIPSTATUS

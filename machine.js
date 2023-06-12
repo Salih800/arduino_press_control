@@ -11,146 +11,148 @@ let tcpClients = {};
 let socketIdAI = 0;
 
 function onMessage(socket, message) {
-    console.log(socket.id + " - TCP -> " + message);
-    let paramIndex = message.indexOf(":");
-    let param = message.slice(0, paramIndex).trim();
-    let value = message.slice(paramIndex + 1).trim();
+    // console.log(socket.id + " - TCP -> " + message);
     if (!socket.imei) {
-        if (param !== 'IMEI') {
+        if (!message.startsWith('IMEI:')) {
+            console.log("IMEI is not first message! Destroying socket! Message => " + message);
             socket.destroy();
+            return;
         }
-        console.log("param : " + param);
-        console.log("value : " + value);
+        let imei = message.split(":")[1].trim();
 
-        sql.dbGetFirst("SELECT user_id,imei FROM container WHERE imei = ?", [value]).then(res => {
+        sql.dbGetFirst("SELECT user_id,imei FROM container WHERE imei = ?", [imei]).then(res => {
             if (res) {
-                socket.write('OK:1\n');
                 for (let prob in tcpClients) {
-                    if (tcpClients[prob].imei.toString() === value.toString()) {
+                    if (tcpClients[prob].imei.toString() === imei.toString()) {
+                        console.log("Same imei already connected! Disconnecting old one! IMEI => " + imei);
                         onDisconnected(tcpClients[prob]);
-                        console.log("Same imei already connected!");
                     }
                 }
-                console.log("SEND OK!");
-                socket.imei = value;
+                socket.write('OK:1\n');
+                console.log("DEVICE REGISTERED! USER => " + res.user_id + " IMEI => " + imei + " SOCKET => " + socket.id);
+                socket.imei = imei;
                 socket.isAlive = true;
                 socket.user = res.user_id;
                 tcpClients[socket.id] = socket;
                 sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-                    [socket.user, param, value, socket.remoteAddress]);
+                    [socket.user, "IMEI", imei, socket.remoteAddress]);
                 sendAllWsClients(socket.user,"CONNECTED")
             } else {
-                console.log(socket.id + " - WRONG IMEI!");
+                console.log(socket.id + " - IMEI NOT FOUND! IMEI => " + imei);
                 onDisconnected(socket);
             }
         });
         return;
-    }
-    if (param === 'K') {
-        socket.isAlive = true;
+    } else {
         sql.dbi("UPDATE container SET last_contact = CURRENT_TIMESTAMP WHERE user_id = ?", [socket.user]);
-    } else if (param === 'DOOR') {
-        if (value === '1') {
-            sql.dbi("UPDATE container SET is_open = 1,last_opened=CURRENT_TIMESTAMP WHERE user_id = ?", [socket.user]);
-        } else if (value === '0') {
-            sql.dbi("UPDATE container SET is_open = 0 WHERE user_id = ?", [socket.user]);
-        }
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'PRESS') {
-        let ratio = value.split(',')[0];
-        let isFull = value.split(',')[1];
-        sql.dbi("UPDATE container SET current_fullness = ?,is_full=?,total_press=total_press+1 WHERE user_id = ?",
-            [ratio, isFull, socket.user]);
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'TEMP') {
-        let temp1 = value.split(',')[0];
-        let temp2 = value.split(',')[1];
-        sql.dbi("UPDATE container SET current_temperature = ?,current_temperature2=? WHERE user_id = ?",
-            [temp1, temp2, socket.user]);
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'LID') {
-        if (value === '1') {
-            sql.dbi("UPDATE container SET is_lid_open = 1 WHERE user_id = ?", [socket.user]);
-            setTimeout(() => {
-                console.log("LID IS STILL OPEN FOR CLIENT = " + socket.user);
-            }, 15000);
-
-        } else if (value === '0') {
-            sql.dbi("UPDATE container SET is_lid_open = 0 WHERE user_id = ?", [socket.user]);
-        }
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'BUTTON1') {
-        console.log("param : " + param);
-        console.log("value : " + value);
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'BUTTON2') {
-        console.log("param : " + param);
-        console.log("value : " + value);
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'GPS') {
-        console.log("param : " + param);
-        console.log("value : " + value);
-        let gpsArray = value.split(",");
-        if (gpsArray.length < 2) {
-            console.log("GPS format is wrong => " + value);
-            return;
-        }
-        let firstStatus = gpsArray[0];
-        let secondStatus = gpsArray[1];
-        if (secondStatus.toString() === "0") {
-            return
-        }
-        let gpsTime = gpsArray[2];
-        let lat = gpsArray[3];
-        let lng = gpsArray[4];
-        console.log('gpsTime => ' + gpsTime);
-        console.log('gpsTime => ' + gpsTime);
-        console.log('lat => ' + lat);
-        console.log('lng => ' + lng);
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-        sql.dbi("UPDATE address SET address_lat = ?,address_lng=? WHERE address_user_id = ?", [lat, lng, socket.user]);
-    } else if (param === 'BAT_V') {
-        sql.dbi(`UPDATE container
-                 SET current_voltage = ?
-                 WHERE user_id = ?`, [value, socket.user]);
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'SOL_V') {
-        sql.dbi(`UPDATE container
-                 SET current_solar_voltage = ?
-                 WHERE user_id = ?`, [value, socket.user]);
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'LED') {
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'FULL') {
-        // TAMAMEN DOLU
-        // RESET:1 GONDER TEKRAR BASLATMAK ICIN
-        sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
-            [socket.user, param, value, socket.remoteAddress])
-    } else if (param === 'DEBUG') {
-        let clients = [];
-        for (let prob in tcpClients) {
-            clients.push({
-                id: tcpClients[prob].id,
-                user: tcpClients[prob].user
-            })
-        }
-        socket.write(JSON.stringify(clients) + '\n');
+        let messages = message.split("|");
+        messages.forEach(msg => {
+            let paramIndex = msg.indexOf(":");
+            let param = msg.slice(0, paramIndex).trim();
+            let value = msg.slice(paramIndex + 1).trim();
+            switch (param) {
+                case 'IMEI':
+                    console.log("IMEI IS ALREADY SET! IMEI => " + value + " USER => " + socket.user);
+                    if (value === socket.imei) {
+                        socket.write('OK:1\n');
+                    } else {
+                        console.log("IMEI IS NOT SAME! IMEI => " + value + " USER => " + socket.user);
+                        onDisconnected(socket);
+                    }
+                    break;
+                case 'K':
+                    socket.isAlive = true;
+                    break;
+                case 'PRES DURUMU':
+                case 'Pres':
+                    if (value === 'Devre disi') {
+                        sql.dbi("UPDATE container SET is_full=? WHERE user_id = ?", [1, socket.user]);
+                    } else {
+                        sql.dbi("UPDATE container SET is_full=? WHERE user_id = ?", [0, socket.user]);
+                    }
+                    break;
+                case 'Manyetik Kilit':
+                case 'Akım':
+                case 'Yerel Zaman':
+                    break;
+                case 'KONUM':
+                case 'Konum':
+                    // KONUM:40.123456,29.123456
+                    let gpsArray = value.split(",");
+                    let lat = gpsArray[0];
+                    let lng = gpsArray[1];
+                    if (lat != 0.0 || lng != 0.0) {
+                        sql.dbi("UPDATE address SET address_lat = ?,address_lng=? WHERE address_user_id = ?", [lat, lng, socket.user]);
+                    } else {
+                        console.log("GPS IS NULL! GPS => " + value + " USER => " + socket.user);
+                    }
+                    break;
+                case 'Enlem':
+                    // ENLEM:40.123456
+                    if (value != 0.0) {
+                        sql.dbi("UPDATE address SET address_lat = ? WHERE address_user_id = ?", [value, socket.user]);
+                    } else {
+                        console.log("LAT IS NULL! LAT => " + value + " USER => " + socket.user);
+                    }
+                    break;
+                case 'Boylam':
+                    // BOYLAM:29.123456
+                    if (value != 0.0) {
+                        sql.dbi("UPDATE address SET address_lng = ? WHERE address_user_id = ?", [value, socket.user]);
+                    } else {
+                        console.log("LNG IS NULL! LNG => " + value + " USER => " + socket.user);
+                    }
+                    break;
+                case 'SICAKLIK':
+                case 'Sıcaklık':
+                    // SICAKLIK:21.50C
+                    let temp = value.split("C")[0].trim();
+                    sql.dbi("UPDATE container SET current_temperature = ? WHERE user_id = ?", [temp, socket.user]);
+                    break;
+                case 'KAPI':
+                case 'Kapı':
+                    // KAPAK:Acik
+                    if (value === 'Acik') {
+                        sql.dbi("UPDATE container SET is_open = 1,last_opened=CURRENT_TIMESTAMP WHERE user_id = ?", [socket.user]);
+                    } else {
+                        sql.dbi("UPDATE container SET is_open = 0 WHERE user_id = ?", [socket.user]);
+                    }
+                    break;
+                case 'KAPAK':
+                case 'Kapak':
+                    // KAPAK:Acik
+                    if (value === 'Acik') {
+                        sql.dbi("UPDATE container SET is_lid_open = 1 WHERE user_id = ?", [socket.user]);
+                        setTimeout(() => {
+                            console.log("LID IS STILL OPEN FOR CLIENT = " + socket.user);
+                        }, 15000);
+                    } else {
+                        sql.dbi("UPDATE container SET is_lid_open = 0 WHERE user_id = ?", [socket.user]);
+                    }
+                    break;
+                case 'DOLULUK':
+                case 'Doluluk':
+                    // DOLULUK: 50%
+                    let fullness = value.split("%")[0].trim();
+                    sql.dbi("UPDATE container SET current_fullness = ? WHERE user_id = ?",
+                        [fullness, socket.user]);
+                    break;
+                case 'VOLTAJ':
+                case 'Voltaj':
+                    // VOLTAJ: 24.52
+                    sql.dbi("UPDATE container SET current_voltage = ? WHERE user_id = ?", [value, socket.user]);
+                    break;
+                default:
+                    console.log("UNKNOWN PARAMETER! PARAMETER => " + param + " VALUE => " + value + " USER => " + socket.user);
+                    break;
+            }
+            sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
+                        [socket.user, param, value, socket.remoteAddress]);
+        });
     }
-    //GPSPERIOD:3-1000
-    //GPSC:1
-    //TEMP_ALARM:1
+    // socket.write('SEND OK\n');
     sendAllWsClients(socket.user,message)
-    console.log("FROM " + socket.user + " RECEIVED " + message);
+    // console.log("FROM " + socket.user + " RECEIVED " + message);
     let isV6 = socket.remoteFamily == 'IPv6' ? 1 : 0;
     sql.dbi("INSERT INTO tcp_log (ip,isV6,message) VALUES (?,?,?)", [
         socket.remoteAddress,
@@ -197,6 +199,7 @@ tcpServer.on('connection', function (socket) {
     // When the client requests to end the TCP connection with the server, the server
     // ends the connection.
     socket.on('end', function () {
+        console.log('Client closed connection: ' + socket.user);
         onDisconnected(socket);
     });
 

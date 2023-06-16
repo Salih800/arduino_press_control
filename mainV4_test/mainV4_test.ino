@@ -25,15 +25,19 @@
 #define TCP_HOST "185.98.62.213"
 #define TCP_PORT 8181
 
+#define BAUD_RATE 9600 // Serial port baud rate'i
+
 #define PRESS_CHECK_TIME 1000 // Pres kontrol zamanlayıcısı (Ne kadar sıklıkla presin yapılıp yapılmayacağı kontrol ediliyor)
 #define PRESS_NEEDED_COUNT 2000 / PRESS_CHECK_TIME // Presin normal başlama sayısı (? milisaniye boyunca doluluk oranı %?'ın üzerindeyse)
 #define MAX_PRESS_OFF_TIME 43200000UL // Presin maksimum durma süresi (Presin durduktan sonra ne kadar süre sonra tekrar çalışacağı)
 #define SIM808_CHECK_TIME 1000 // GPS kontrol zamanlayıcısı
 #define GPS_CHECK_TIME 30000 // GPS kontrol zamanlayıcısı
 #define MESSAGE_SEND_INTERVAL 60000 // Mesaj gönderme aralığı
-#define MESSAGE_SEND_TIMEOUT 10000 // Mesaj gönderme zaman aşımı
+#define MESSAGE_SEND_TIMER 1000 // Mesaj gönderme zamanlayıcısı
+// #define MESSAGE_SEND_TIMEOUT 30000 // Mesaj gönderme zaman aşımı
 #define PRESS_WORKING_CURRENT 0.5 // Presin çalışma akımı
-#define TEMPERATURE_CHECK_TIME 60000 // Sıcaklık kontrol zamanlayıcısı
+#define TEMPERATURE_CHECK_TIME 1000 // Sıcaklık kontrol zamanlayıcısı
+#define DISTANCE_CHECK_TIME 1000 // Mesafe kontrol zamanlayıcısı
 
 #define NEEDED_OCCUPANCY 90 // Gerekli doluluk oranı
 #define MIN_OCCUPANCY_DISTANCE 400 // Minimum doluluk mesafesi
@@ -63,6 +67,7 @@ double voltage = 24.0;      // Voltaj değişkeni
 double current = 0.0;      // Akım değişkeni
 double power = 0.0;        // Güç değişkeni
 double temperature = 0.0;  // Sıcaklık değişkeni
+double systemFPS = 0;                  // Sistem FPS'i
 
 bool isPressReady = false;    // Pres hazır durumu
 bool isPressWorking = false;  // Presin çalışma durumu
@@ -70,6 +75,19 @@ bool isPressPaused = true;   // Presin durdurulma durumu
 bool isSystemTimeSet = false; // Sistemin zamanının ayarlanma durumu
 bool isGPSInitialized = false; // GPS'in başlatılma durumu
 bool isMessageSent = true; // Mesajın gönderilme durumu
+
+// Zaman değişkenleri
+unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
+unsigned long sim808CheckTime = 0;              // SIM808 kontrol zamanlayıcısı
+unsigned long gpsCheckTime = 0;              // GPS kontrol zamanlayıcısı
+unsigned long displayCheckTime = 0;              // Ekran kontrol zamanlayıcısı
+unsigned long lastPressTime = 0;             // Presin son çalışma zamanı
+unsigned long lastMessageSendTime = 0;       // Son mesaj gönderme zamanı
+unsigned long messageSentTime = 0;           // Mesajın gönderilme zamanı
+unsigned long sim808ResetTime = 0;           // SIM808 reset zamanı
+unsigned long systemLoopCounter = 0;          // Sistem döngü sayacı
+unsigned long temperatureCheckTime = 0;      // Sıcaklık kontrol zamanlayıcısı
+unsigned long distanceCheckTime = 0;         // Mesafe kontrol zamanlayıcısı
 
 String messagesToSend = ""; // Gönderilecek mesajlar
 String receivedMessages = ""; // Alınan mesajlar
@@ -162,19 +180,6 @@ enum COVER_STATES coverState = COVER_CLOSED;        // Kapak durumu
 enum MAGNETIC_LOCK_STATES magneticLockState = MAGNETIC_UNLOCKED; // Manyetik kilit durumu
 enum DISPLAY_STATES displayState = DOOR_AND_COVER_CLOSED; // Ekranda ne yazacağını belirleyen durumlar
 
-// Zaman değişkenleri
-unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
-unsigned long sim808CheckTime = 0;              // SIM808 kontrol zamanlayıcısı
-unsigned long gpsCheckTime = 0;              // GPS kontrol zamanlayıcısı
-unsigned long displayCheckTime = 0;              // Ekran kontrol zamanlayıcısı
-unsigned long lastPressTime = 0;             // Presin son çalışma zamanı
-unsigned long lastMessageSendTime = 0;       // Son mesaj gönderme zamanı
-unsigned long messageSentTime = 0;           // Mesajın gönderilme zamanı
-unsigned long sim808ResetTime = 0;           // SIM808 reset zamanı
-unsigned long systemLoopCounter = 0;          // Sistem döngü sayacı
-double systemFPS = 0;                  // Sistem FPS'i
-unsigned long temperatureCheckTime = 0;      // Sıcaklık kontrol zamanlayıcısı
-
 // Fonksiyonlar
 void setup(); // Setup fonksiyonu
 void loop();  // Loop fonksiyonu
@@ -223,13 +228,13 @@ void drawProgressBar(const int x, const int y, const int width, const int height
 void setup()
 {
     // Serial port başlatılıyor
-    Serial.begin(9600);
+    Serial.begin(BAUD_RATE);
     Serial.println();
     Serial.println(F("Starting..."));
 
     // SIM808 başlatılıyor
     Serial.println(F("Starting MySerial..."));
-    mySerial.begin(9600);
+    mySerial.begin(BAUD_RATE);
 
     // Ekran başlatılıyor
     const String startingText = "BASLATILIYOR...";
@@ -375,10 +380,14 @@ void updateVariables()
     checkMagneticLockState();
 
     // Mesafe sensörü okunuyor
-    distance = readDistance();
+    if (millis() - distanceCheckTime > DISTANCE_CHECK_TIME || distanceCheckTime == 0)
+    {
+        distanceCheckTime = millis();
+        distance = readDistance();
 
-    // Doluluk oranı hesaplanıyor
-    checkOccupancy();
+        // Doluluk oranı hesaplanıyor
+        checkOccupancy();
+    }
 
     // Akım ve voltaj sensörü okunuyor
     voltage = readVoltage();
@@ -762,21 +771,24 @@ bool powerUpGPS()
 // UTC formatındaki zamanı yerel saat formatına dönüştürme
 String convertToLocalDate(const String time)
 {
-    const String year = time.substring(0, 4);
-    const String month = time.substring(4, 6);
-    const String day = time.substring(6, 8);
-    const String hour = time.substring(8, 10);
-    const String minute = time.substring(10, 12);
-    const String second = time.substring(12, 14);
-    if (!isSystemTimeSet && year.toInt() > 2022) {
+    const String gps_year = time.substring(0, 4);
+    const String gps_month = time.substring(4, 6);
+    const String gps_day = time.substring(6, 8);
+    const String gps_hour = time.substring(8, 10);
+    const String gps_minute = time.substring(10, 12);
+    const String gps_second = time.substring(12, 14);
+    if (!isSystemTimeSet && gps_year.toInt() > 2022) {
         Serial.println(F("Updating system time..."));
-        setTime(hour.toInt(), minute.toInt(), second.toInt(), day.toInt(), month.toInt(), year.toInt());
+        setTime(gps_hour.toInt(), gps_minute.toInt(), gps_second.toInt(), gps_day.toInt(), gps_month.toInt(), gps_year.toInt());
         adjustTime(3 * SECS_PER_HOUR); // UTC+3
         isSystemTimeSet = true;
         Serial.println(F("System time updated!"));
+    } else if (isSystemTimeSet && (gps_minute.toInt() != minute() || gps_second.toInt() != second())) {
+        setTime(gps_hour.toInt(), gps_minute.toInt(), gps_second.toInt(), gps_day.toInt(), gps_month.toInt(), gps_year.toInt());
+        adjustTime(3 * SECS_PER_HOUR); // UTC+3
     }
-    const String localDate = day + F("/") + month + F("/") + year;
-    const String localTime = hour + F(":") + minute + F(":") + second;
+    const String localDate = gps_day + F("/") + gps_month + F("/") + gps_year;
+    const String localTime = gps_hour + F(":") + gps_minute + F(":") + gps_second;
     return localDate + F(" ") + localTime;
 }
 
@@ -875,17 +887,13 @@ void readGPS()
     if (gpsData == "")
     {
         Serial.println(F("GPS data is empty!"));
-        return;
     } else if (gpsData.length() < 70)
     {
         Serial.println(F("GPS data is invalid!"));
     } else
     {
         parseGPSData(gpsData);
-        // Serial.println(F("GPS data is valid!"));
     }
-    // mySerial.readStringUntil('\n');
-    // mySerial.readStringUntil('\n');
 }
 
 String readSIM808(const String cmd, const String resp)
@@ -1019,11 +1027,9 @@ void sendSystemStateToServer()
     if (messagesToSend.length() > 0 && sim808State >= SIM808_TCP_CONNECTED) {
         const char *messageToSend = strtok((char *)messagesToSend.c_str(), "\n");
         const String message = String(messageToSend);
-        if (message && isMessageSent){ // && !isPressWorking) {
+        if (message && millis() - messageSentTime > MESSAGE_SEND_TIMER) {
             isMessageSent = false;
             messagesToSend = messagesToSend.substring(message.length() + 1);
-            // Serial.print(F("Message to send: "));Serial.println(message);
-            // Serial.print(message.length());Serial.println(F(" bytes"));
             if (sim808.send(message.c_str(), message.length()) == 0) {
                 sim808State = SIM808_SIM_READY;
                 Serial.println(F("Message could not be sent!"));
@@ -1182,7 +1188,7 @@ void checkAvailableMessages()
                 }
                 break;
             case SIM808_IP_CONNECTED:
-                if (strstr(message, "CONNECT OK") != NULL) {
+                if (strstr(message, "CONNECT OK") != NULL || strstr(message, "ALREADY") != NULL || strstr(message, "OK") != NULL) {
                     sim808State = SIM808_TCP_CONNECTED;
                     Serial.println(F("SIM808_TCP_CONNECTED"));
                 } else if (strstr(message, "ERROR") != NULL) {
@@ -1240,10 +1246,11 @@ void checkAvailableMessages()
 
     receivedMessages = "";
 
-    if (!isMessageSent && millis() - messageSentTime > MESSAGE_SEND_TIMEOUT) {
-        Serial.println(F("Message send timeout! Closing connection..."));
-        sim808State = SIM808_SIM_READY;
-    }
+    // if (!isMessageSent && millis() - messageSentTime > MESSAGE_SEND_TIMEOUT) {
+    //     Serial.println(F("Message send timeout! Closing connection..."));
+    //     sim808State = SIM808_SIM_READY;
+    //     sendSystemStateToServer();
+    // }
 
     // messageCheckTime = millis() - messageCheckTime;
     // if (messageCheckTime > 5) {

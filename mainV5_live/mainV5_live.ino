@@ -3,11 +3,13 @@
 #include <DFRobot_SIM808.h> // SIM808 kütüphanesi
 #include <U8g2lib.h>          // Ekran kütüphanesi
 #include <Adafruit_VL53L0X.h> // Mesafe sensörü kütüphanesi
+#include <Wire.h>             // I2C kütüphanesi
 #include <INA226.h>           // Akım ve voltaj sensörü kütüphanesi
 #include <math.h>             //loads the more advanced math functions
 #include <TimeLib.h>          // Zaman dönüşümleri için gerekli kütüphane
 
 // Pinler
+#define INA226_ADDR 0x40    // Akım ve voltaj sensörü adresi
 #define TEMPERATURE_PIN A0  // Sıcaklık sensörü
 #define COVER_PIN 4         // Kapak sensörü pin
 #define DOOR_PIN 5          // Kapı sensörü pin
@@ -34,7 +36,6 @@
 #define GPS_CHECK_TIME 30000 // GPS kontrol zamanlayıcısı
 #define MESSAGE_SEND_INTERVAL 60000 // Mesaj gönderme aralığı
 #define MESSAGE_SEND_TIMER 1000 // Mesaj gönderme zamanlayıcısı
-// #define MESSAGE_SEND_TIMEOUT 30000 // Mesaj gönderme zaman aşımı
 #define PRESS_WORKING_CURRENT 0.5 // Presin çalışma akımı
 #define TEMPERATURE_CHECK_TIME 60000 // Sıcaklık kontrol zamanlayıcısı
 #define DISTANCE_CHECK_TIME 1000 // Mesafe kontrol zamanlayıcısı
@@ -44,7 +45,7 @@
 #define MAX_OCCUPANCY_DISTANCE 1300 // Maksimum doluluk mesafesi
 #define OCCUPANCY_DISTANCE_JUMP 45 // Doluluk mesafesi artışı
 #define MIN_WORKING_VOLTAGE 22 // Minimum çalışma voltajı
-#define MAX_WORKING_TEMPERATURE 70 // Maksimum çalışma sıcaklığı
+#define MAX_WORKING_TEMPERATURE 50 // Maksimum çalışma sıcaklığı
 #define SIM808_RESET_TIME 300000UL // SIM808 reset zamanı
 
 #define SYSTEM_START_DELAY 1000 // Sistem başlatma gecikmesi
@@ -60,17 +61,19 @@ DFRobot_SIM808 sim808(&mySerial);                                               
 int occupancy = 0;         // Doluluk oranı
 int distance = 0;          // Mesafe değişkeni
 int pressNeeded = 0;       // Presin gerekli olup olmadığı durumu
-int pressDownState = 0;    // Presin aşağı inme durumu
-int pressUpState = 1;      // Presin yukarı çıkma durumu
+int totalPressCount = 0;   // Presin toplam çalışma sayısı
 
-double voltage = 24.0;      // Voltaj değişkeni
+double voltage = 24.0;     // Voltaj değişkeni
 double current = 0.0;      // Akım değişkeni
 double power = 0.0;        // Güç değişkeni
 double temperature = 0.0;  // Sıcaklık değişkeni
-double systemFPS = 0;                  // Sistem FPS'i
+double systemFPS = 0.0;    // Sistem FPS'i
 
+bool pressDownState = false;    // Presin aşağı inme durumu
+bool pressUpState = true;      // Presin yukarı çıkma durumu
 bool isPressReady = false;    // Pres hazır durumu
 bool isPressWorking = false;  // Presin çalışma durumu
+bool isPressStarted = false;  // Presin başlatılma durumu
 bool isPressPaused = true;   // Presin durdurulma durumu
 bool isSystemTimeSet = false; // Sistemin zamanının ayarlanma durumu
 bool isGPSInitialized = false; // GPS'in başlatılma durumu
@@ -78,14 +81,14 @@ bool isMessageSent = true; // Mesajın gönderilme durumu
 
 // Zaman değişkenleri
 unsigned long pressCheckTime = 0;            // Pres kontrol zamanlayıcısı
-unsigned long sim808CheckTime = 0;              // SIM808 kontrol zamanlayıcısı
+unsigned long sim808CheckTime = 0;           // SIM808 kontrol zamanlayıcısı
 unsigned long gpsCheckTime = 0;              // GPS kontrol zamanlayıcısı
-unsigned long displayCheckTime = 0;              // Ekran kontrol zamanlayıcısı
+unsigned long displayCheckTime = 0;          // Ekran kontrol zamanlayıcısı
 unsigned long lastPressTime = 0;             // Presin son çalışma zamanı
 unsigned long lastMessageSendTime = 0;       // Son mesaj gönderme zamanı
 unsigned long messageSentTime = 0;           // Mesajın gönderilme zamanı
 unsigned long sim808ResetTime = 0;           // SIM808 reset zamanı
-unsigned long systemLoopCounter = 0;          // Sistem döngü sayacı
+unsigned long systemLoopCounter = 0;         // Sistem döngü sayacı
 unsigned long temperatureCheckTime = 0;      // Sıcaklık kontrol zamanlayıcısı
 unsigned long distanceCheckTime = 0;         // Mesafe kontrol zamanlayıcısı
 
@@ -185,7 +188,6 @@ void setup(); // Setup fonksiyonu
 void loop();  // Loop fonksiyonu
 void updateVariables(); // Değişkenleri güncelleme fonksiyonu
 void printVariablesToSerial(); // Değişkenleri seri porta yazdırma fonksiyonu
-void checkPress(); // Pres kontrol fonksiyonu
 void updatePressState(); // Presin durumunu güncelleme fonksiyonu
 bool checkPressNeeded(); // Presin gerekli olup olmadığını kontrol eden fonksiyon
 bool checkPressReady(); // Pres yapmaya hazır mı kontrol eden fonksiyon
@@ -206,7 +208,6 @@ uint16_t readDistance(); // Mesafe okuma fonksiyonu
 float readTemperature(); // Sıcaklık okuma fonksiyonu
 String getLocalDateTime(); // Zaman fonksiyonu
 String getDigits(const int number); // Sayıyı 2 basamaklı hale getirme fonksiyonu
-// void powerUpDownSIM808(); // SIM808 güç açma kapama fonksiyonu
 bool powerUpGPS(); // GPS güç açma fonksiyonu
 String convertToLocalDate(const String time); // UTC zamanı yerel zamana çevirme fonksiyonu
 float convertToKilometersPerHour(const String kphValue); // Hızı km/saat cinsinden çevirme fonksiyonu
@@ -224,6 +225,9 @@ void checkDisplayState(); // Ekranda ne yazacağını belirleyen fonksiyon
 void updateTestDisplay(); // Test ekranını güncelleme fonksiyonu
 void updateLiveDisplay(); // Canlı ekranı güncelleme fonksiyonu
 void drawProgressBar(const int x, const int y, const int width, const int height, const int percent); // İlerleme çubuğu çizme fonksiyonu
+String getWorkingTime(); // Çalışma süresini döndüren fonksiyon
+int send_message(const char * str, int len); // SIM808 ile mesaj gönderme fonksiyonu
+bool isINA226connected(); // INA226 bağlantısını kontrol eden fonksiyon
 
 void setup()
 {
@@ -287,8 +291,9 @@ void setup()
     // Akım ve voltaj sensörü başlatılıyor
     Serial.println(F("Starting Power Module..."));
     printToDisplayScreen(0, 25, F("Guc Modulu:"));
-    if (powerSensor.begin()) // TODO: Check if this is working
+    if (isINA226connected())
     {
+        powerSensor.begin();
         Serial.println(F("Power Module Started."));
         printToDisplayScreen(64, 25, F("Baslatildi."));
         powerSensor.configure(INA226_AVERAGES_1, INA226_BUS_CONV_TIME_1100US, INA226_SHUNT_CONV_TIME_1100US, INA226_MODE_SHUNT_BUS_CONT);
@@ -344,8 +349,7 @@ void loop()
     updateVariables();        // Değişkenler güncelleniyor
     // printVariablesToSerial(); // Değişkenler seri porta yazdırılıyor
 
-    // Pres kontrol ediliyor
-    checkPress();
+    updatePressState(); // Pres durumu güncelleniyor
 
     // Gelen veriler okunuyor
     checkAvailableMessages(); // Sunucudan gelen veriler okunuyor
@@ -400,6 +404,9 @@ void updateVariables()
         temperatureCheckTime = millis();
         temperature = readTemperature();
     }
+
+    checkPressWorking(); // Presin çalışıp çalışmadığı kontrol ediliyor
+    checkPressReady();   // Presin hazır olup olmadığı kontrol ediliyor
 }
 
 // Değişkenleri seri porta yazdırma fonksiyonu
@@ -420,12 +427,9 @@ void printVariablesToSerial()
     Serial.println();
 }
 
-// Pres kontrol fonksiyonu
-void checkPress()
+// Presin durumunu güncelleme fonksiyonu
+void updatePressState() 
 {
-    checkPressWorking(); // Presin çalışıp çalışmadığı kontrol ediliyor
-    checkPressReady();   // Presin hazır olup olmadığı kontrol ediliyor
-
     if (millis() - pressCheckTime > PRESS_CHECK_TIME && pressState <= PRESS_STOPPED)
     {
         pressCheckTime = millis(); // TODO: PRESS NEEDED
@@ -447,66 +451,66 @@ void checkPress()
             pressState = PRESS_NEEDED;
         }
     }
-    
-    updatePressState(); // Pres durumu güncelleniyor
-}
 
-// Presin durumunu güncelleme fonksiyonu
-void updatePressState() 
-{
-    if (pressDownState == 0 && pressUpState == 0 && !isPressWorking && isPressReady && pressState == PRESS_NEEDED)
+    if (!pressDownState && !pressUpState && !isPressWorking && isPressReady && pressState == PRESS_NEEDED)
     { // Pres duruyorsa ve pres hazırsa ve pres gerekliyse ve pres çalışmıyorsa ve pres devre dışı değilse
         // Serial.println(F("Starting press..."));
         pressDown();
         pressState = PRESS_STARTING;
     }
-    else if (pressDownState == 1 && pressUpState == 0 && isPressWorking && isPressReady)
+    else if (pressDownState && !pressUpState && isPressWorking && isPressReady)
     { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışıyorsa
         // Serial.println(F("Pressing down..."));
         pressDown();
+        isPressStarted = true;
         pressState = PRESS_IS_GOING_DOWN;
     }
-    else if (pressDownState == 1 && pressUpState == 0 && !isPressReady)
+    else if (pressDownState && !pressUpState && !isPressReady)
     { // Pres aşağı iniyorsa ve pres hazır değilse
         // Serial.println(F("Waiting for pressing down..."));
         pressWait();
         pressState = PRESS_DOWN_WAITING;
     }
-    else if (pressDownState == 1 && pressUpState == 0 && !isPressWorking && isPressReady && isPressPaused)
+    else if (pressDownState && !pressUpState && !isPressWorking && isPressReady && isPressPaused)
     { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmuşsa
         // Serial.println(F("Continuing pressing down..."));
         pressDown();
         pressState = PRESS_IS_GOING_DOWN;
     }
-    else if (pressDownState == 1 && pressUpState == 0 && !isPressWorking && isPressReady && !isPressPaused)
+    else if (pressDownState && !pressUpState && !isPressWorking && isPressReady && !isPressPaused)
     { // Pres aşağı iniyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmamışsa
         // Serial.println(F("Pressed down..."));
         pressUp();
         pressState = PRESSED_DOWN;
     }
-    else if (pressDownState == 0 && pressUpState == 1 && isPressWorking && isPressReady)
+    else if (!pressDownState && pressUpState && isPressWorking && isPressReady)
     { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışıyorsa
         // Serial.println(F("Pressing up..."));
         pressUp();
         pressState = PRESS_IS_GOING_UP;
     }
-    else if (pressDownState == 0 && pressUpState == 1 && !isPressReady)
+    else if (!pressDownState && pressUpState && !isPressReady)
     { // Pres yukarı çıkıyorsa ve pres hazır değilse
         // Serial.println(F("Waiting for pressing up..."));
         pressWait();
         pressState = PRESS_UP_WAITING;
     }
-    else if (pressDownState == 0 && pressUpState == 1 && !isPressWorking && isPressReady && isPressPaused)
+    else if (!pressDownState && pressUpState && !isPressWorking && isPressReady && isPressPaused)
     { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmuşsa
         // Serial.println(F("Continuing pressing up..."));
         pressUp();
         pressState = PRESS_IS_GOING_UP;
     }
-    else if (pressDownState == 0 && pressUpState == 1 && !isPressWorking && isPressReady && !isPressPaused)
+    else if (!pressDownState && pressUpState && !isPressWorking && isPressReady && !isPressPaused)
     { // Pres yukarı çıkıyorsa ve pres hazırsa ve pres çalışmıyorsa ve pres durdurulmamışsa
         // Serial.println(F("Pressed up..."));
         pressState = PRESSED_UP;
         pressStop();
+        if (isPressStarted){
+            messagesToSend += F("Pres:Yapildi\n");
+            isPressStarted = false;
+            totalPressCount++;
+        }
         pressNeeded = 0;
         lastPressTime = millis();
         checkPressNeeded() ? pressState = PRESS_DISABLED : pressState = PRESS_STOPPED;
@@ -522,7 +526,7 @@ bool checkPressNeeded()
 // Pres yapmaya hazır mı kontrol eden fonksiyon
 bool checkPressReady()
 {
-    if (doorState == DOOR_CLOSED && coverState == COVER_CLOSED && voltage > MIN_WORKING_VOLTAGE && temperature < MAX_WORKING_TEMPERATURE) // Kapı ve kapak kapalıysa ve voltaj 19V'dan büyükse ve sıcaklık 50C'dan küçükse
+    if (doorState == DOOR_CLOSED && coverState == COVER_CLOSED && voltage > MIN_WORKING_VOLTAGE && temperature < MAX_WORKING_TEMPERATURE) // Kapı ve kapak kapalıysa ve voltaj 22V'dan büyükse ve sıcaklık 50C'dan küçükse
     {
         isPressReady = true;
     }
@@ -537,28 +541,28 @@ String getPressState()
 {
     switch (pressState)
     {
-    case PRESS_DISABLED:
-        return F("Devre disi");
-    case PRESS_STOPPED:
-        return F("Duruyor");
-    case PRESS_NEEDED:
-        return F("Gerekli");
-    case PRESS_STARTING:
-        return F("Baslatiliyor");
-    case PRESS_IS_GOING_DOWN:
-        return F("Asagi iniyor");
-    case PRESS_DOWN_WAITING:
-        return F("Asagi beklemede");
-    case PRESSED_DOWN:
-        return F("Asagida");
-    case PRESS_IS_GOING_UP:
-        return F("Yukari cikiyor");
-    case PRESS_UP_WAITING:
-        return F("Yukari beklemede");
-    case PRESSED_UP:
-        return F("Yukarida");
-    default:
-        return F("Kapali");
+        case PRESS_DISABLED:
+            return F("Devre disi");
+        case PRESS_STOPPED:
+            return F("Duruyor");
+        case PRESS_NEEDED:
+            return F("Gerekli");
+        case PRESS_STARTING:
+            return F("Baslatiliyor");
+        case PRESS_IS_GOING_DOWN:
+            return F("Asagi iniyor");
+        case PRESS_DOWN_WAITING:
+            return F("Asagi beklemede");
+        case PRESSED_DOWN:
+            return F("Asagida");
+        case PRESS_IS_GOING_UP:
+            return F("Yukari cikiyor");
+        case PRESS_UP_WAITING:
+            return F("Yukari beklemede");
+        case PRESSED_UP:
+            return F("Yukarida");
+        default:
+            return F("Kapali");
     }
 }
 
@@ -575,8 +579,8 @@ void pressDown()
     digitalWrite(MAGNETIC_LOCK_PIN, LOW);
     digitalWrite(PRESSDOWN_PIN, HIGH);
     digitalWrite(PRESSUP_PIN, LOW);
-    pressDownState = 1;
-    pressUpState = 0;
+    pressDownState = true;
+    pressUpState = false;
     isPressPaused = false;
 }
 
@@ -586,8 +590,8 @@ void pressUp()
     digitalWrite(MAGNETIC_LOCK_PIN, LOW);
     digitalWrite(PRESSDOWN_PIN, LOW);
     digitalWrite(PRESSUP_PIN, HIGH);
-    pressDownState = 0;
-    pressUpState = 1;
+    pressDownState = false;
+    pressUpState = true;
     isPressPaused = false;
 }
 
@@ -606,8 +610,8 @@ void pressStop()
     digitalWrite(MAGNETIC_LOCK_PIN, HIGH);
     digitalWrite(PRESSDOWN_PIN, LOW);
     digitalWrite(PRESSUP_PIN, LOW);
-    pressDownState = 0;
-    pressUpState = 0;
+    pressDownState = false;
+    pressUpState = false;
     isPressPaused = false;
 }
 
@@ -616,15 +620,15 @@ void checkOccupancy()
 {
     switch (distance)
     {
-    case 0 ... MIN_OCCUPANCY_DISTANCE:
-        occupancy = 100;
-        break;
-    case MIN_OCCUPANCY_DISTANCE + 1 ... MAX_OCCUPANCY_DISTANCE:
-        occupancy = 100 - 5 * ((distance - MIN_OCCUPANCY_DISTANCE) / OCCUPANCY_DISTANCE_JUMP);
-        break;
-    default:
-        occupancy = 0;
-        break;
+        case 0 ... MIN_OCCUPANCY_DISTANCE:
+            occupancy = 100;
+            break;
+        case MIN_OCCUPANCY_DISTANCE + 1 ... MAX_OCCUPANCY_DISTANCE:
+            occupancy = 100 - 5 * ((distance - MIN_OCCUPANCY_DISTANCE) / OCCUPANCY_DISTANCE_JUMP);
+            break;
+        default:
+            occupancy = 0;
+            break;
     }
     if (occupancy < 0)
         occupancy = 0;
@@ -739,17 +743,6 @@ String getDigits(const int digits)
     digitsStr += String(digits);
     return digitsStr;
 }
-
-// SIM808 açma kapama fonksiyonu
-// void powerUpDownSIM808()
-// {
-//     Serial.println(F("Resetting SIM808..."));
-//     digitalWrite(SIM808_POWER_PIN, HIGH);
-//     delay(3000);
-//     digitalWrite(SIM808_POWER_PIN, LOW);
-//     delay(1000);
-//     powerUpGPS();
-// }
 
 // SIM808 GPS açma fonksiyonu
 bool powerUpGPS()
@@ -917,30 +910,30 @@ String getSIM808State()
 {
     switch (sim808State)
     {
-    case SIM808_POWER_OFF:
-        return F("POWER OFF");
-    case SIM808_POWER_ON:
-        return F("POWER ON");
-    case SIM808_GPS_POWERED:
-        return F("GPS OK");
-    case SIM808_GPS_READY:
-        return F("GPS READY");
-    case SIM808_SIM_NOT_READY:
-        return F("NO SIM");
-    case SIM808_SIM_READY:
-        return F("SIM READY");
-    case SIM808_INITIALIZED:
-        return F("READY");
-    case SIM808_JOINED_TO_NETWORK:
-        return F("NET OK");
-    case SIM808_WIRELESS_CONNECTED ... SIM808_IP_CONNECTED:
-        return F("CONNECTING");
-    case SIM808_TCP_CONNECTED:
-        return F("TCP OK");
-    case SIM808_REGISTERED_TO_SERVER:
-        return F("SERVER OK");
-    default:
-        return F("UNKNOWN");
+        case SIM808_POWER_OFF:
+            return F("POWER OFF");
+        case SIM808_POWER_ON:
+            return F("POWER ON");
+        case SIM808_GPS_POWERED:
+            return F("GPS OK");
+        case SIM808_GPS_READY:
+            return F("GPS READY");
+        case SIM808_SIM_NOT_READY:
+            return F("NO SIM");
+        case SIM808_SIM_READY:
+            return F("SIM READY");
+        case SIM808_INITIALIZED:
+            return F("READY");
+        case SIM808_JOINED_TO_NETWORK:
+            return F("NET OK");
+        case SIM808_WIRELESS_CONNECTED ... SIM808_IP_CONNECTED:
+            return F("CONNECTING");
+        case SIM808_TCP_CONNECTED:
+            return F("TCP OK");
+        case SIM808_REGISTERED_TO_SERVER:
+            return F("SERVER OK");
+        default:
+            return F("UNKNOWN");
     }
 }
 
@@ -1030,7 +1023,7 @@ void sendSystemStateToServer()
         if (message && millis() - messageSentTime > MESSAGE_SEND_TIMER) {
             isMessageSent = false;
             messagesToSend = messagesToSend.substring(message.length() + 1);
-            if (sim808.send(message.c_str(), message.length()) == 0) {
+            if (send_message(message.c_str(), message.length()) == 0) {
                 sim808State = SIM808_SIM_READY;
                 Serial.println(F("Message could not be sent!"));
             }
@@ -1043,38 +1036,18 @@ void sendSystemStateToServer()
 String getSystemState()
 {
     String systemState = F("K:OK | ");
-    systemState += F("Pres: ");
-    systemState += getPressState();
-    systemState += F(" | ");
-    systemState += F("Kapak: ");
-    systemState += getCoverState();
-    systemState += F(" | ");
-    systemState += F("Kapı: ");
-    systemState += getDoorState();
-    systemState += F(" | ");
-    systemState += F("Manyetik Kilit: ");
-    systemState += getMagneticLockState();
-    systemState += F(" | ");
-    systemState += F("Doluluk: ");
-    systemState += String(occupancy);
-    systemState += F("% | ");
-    systemState += F("Voltaj: ");
-    systemState += String(voltage);
-    systemState += F(" | ");
-    systemState += F("Akım: ");
-    systemState += String(current);
-    systemState += F(" | ");
-    systemState += F("Sıcaklık: ");
-    systemState += temperature;
-    systemState += F("C | ");
-    systemState += F("Enlem: ");
-    systemState += String(GPSdata.lat, 6);
-    systemState += F(" | ");
-    systemState += F("Boylam: ");
-    systemState += String(GPSdata.lon, 6);
-    systemState += F(" | ");
-    systemState += F("Yerel Zaman: ");
-    systemState += getLocalDateTime();
+    systemState += F("Pres: ");systemState += getPressState();systemState += F(" | ");
+    systemState += F("Kapak: ");systemState += getCoverState();systemState += F(" | ");
+    systemState += F("Kapı: ");systemState += getDoorState();systemState += F(" | ");
+    systemState += F("Manyetik Kilit: ");systemState += getMagneticLockState();systemState += F(" | ");
+    systemState += F("Doluluk: ");systemState += String(occupancy);systemState += F("% | ");
+    systemState += F("Voltaj: ");systemState += String(voltage);systemState += F(" | ");
+    systemState += F("Akım: ");systemState += String(current);systemState += F(" | ");
+    systemState += F("Sıcaklık: ");systemState += temperature;systemState += F("C | ");
+    systemState += F("Enlem: ");systemState += String(GPSdata.lat, 6);systemState += F(" | ");
+    systemState += F("Boylam: ");systemState += String(GPSdata.lon, 6);systemState += F(" | ");
+    systemState += F("Yerel Zaman: ");systemState += getLocalDateTime();systemState += F(" | ");
+    systemState += F("Çalışma Zamanı: ");systemState += getWorkingTime();
 
     return systemState;
 }
@@ -1097,7 +1070,6 @@ void printToDisplayScreen(const int x, const int y, const String text)
 
 void checkAvailableMessages() 
 {
-    // unsigned long messageCheckTime = millis();
     while (mySerial.available()) {
         receivedMessages += mySerial.readStringUntil('\n') + F("\n");
     } 
@@ -1212,15 +1184,15 @@ void checkAvailableMessages()
                 } else if (strstr(message, "K:PRES DURUMU") != NULL) {
                     messagesToSend += "PRES DURUMU:" + getPressState() + F("\n");
                 } else if (strstr(message, "K:PRESİ BAŞLAT") != NULL) {
-                    pressDownState = 1;
-                    pressUpState = 0;
+                    pressDownState = true;
+                    pressUpState = false;
                     pressState = PRESS_STARTING;
                     isPressPaused = true;
                     Serial.println(F("Press started!"));
-                    messagesToSend += "PRESİ BAŞLAT: OK\n";
+                    messagesToSend += F("PRESİ BAŞLAT: OK\n");
                 } else if (strstr(message, "K:PRESİ DURDUR") != NULL) {
-                    pressDownState = 0;
-                    pressUpState = 1;
+                    pressDownState = false;
+                    pressUpState = true;
                     isPressPaused = true;
                     messagesToSend += F("PRESİ DURDUR: OK\n");
                 } else if (strstr(message, "K:KONUM") != NULL) {
@@ -1234,6 +1206,10 @@ void checkAvailableMessages()
                     messagesToSend += ("DOLULUK: ") + String(occupancy) + F("%\n");
                 } else if (strstr(message, "K:IP") != NULL) {
                     messagesToSend += "IP: " + IP + F("\n");
+                } else if (strstr(message, "K:ÇALIŞMA ZAMANI") != NULL) {
+                    messagesToSend += "ÇALIŞMA ZAMANI: " + getWorkingTime() + F("\n");
+                } else if (strstr(message, "K:PRES SAYISI") != NULL) {
+                    messagesToSend += "PRES SAYISI: " + String(totalPressCount) + F("\n");
                 }
                 break;
             default:
@@ -1245,17 +1221,6 @@ void checkAvailableMessages()
     }
 
     receivedMessages = "";
-
-    // if (!isMessageSent && millis() - messageSentTime > MESSAGE_SEND_TIMEOUT) {
-    //     Serial.println(F("Message send timeout! Closing connection..."));
-    //     sim808State = SIM808_SIM_READY;
-    //     sendSystemStateToServer();
-    // }
-
-    // messageCheckTime = millis() - messageCheckTime;
-    // if (messageCheckTime > 5) {
-    //     Serial.print(F("Message Check Time: "));Serial.println(messageCheckTime);
-    // }
 }
 
 void checkDisplayState()
@@ -1288,17 +1253,19 @@ void updateTestDisplay()
         u8g2.setCursor(0, 15);u8g2.print(F("Voltaj: "));u8g2.print(voltage);u8g2.println(F(" V"));
         u8g2.setCursor(0, 25);u8g2.print(F("Akim: "));u8g2.print(current);u8g2.println(F(" A"));
         u8g2.setCursor(0, 35);u8g2.println(getLocalDateTime());
-        u8g2.setCursor(0, 45);u8g2.print(F("Sicaklik: "));u8g2.print(temperature);u8g2.println(F(" C"));
-        u8g2.setCursor(0, 55);u8g2.print(F("SIM: "));u8g2.println(getSIM808State());
-        u8g2.setCursor(0, 62);u8g2.print(F("FPS: "));u8g2.println(systemFPS);
+        u8g2.setCursor(0, 40);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
+        u8g2.setCursor(0, 50);u8g2.print(F("SIM: "));u8g2.println(getSIM808State());
+        u8g2.setCursor(0, 56);u8g2.print(F("FPS: "));u8g2.println(systemFPS);
+        u8g2.setCursor(0, 62);u8g2.print(getWorkingTime());
 
         u8g2.setCursor(64, 5);u8g2.print(F("Doluluk: "));u8g2.print(occupancy);u8g2.println(F(" %"));
-        u8g2.setCursor(64, 15);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
-        u8g2.setCursor(64, 25);u8g2.print(F("Kapi: "));u8g2.println(getDoorState());
-        u8g2.setCursor(75, 35);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
-        u8g2.setCursor(64, 45);u8g2.print(F("Pres: "));u8g2.println(getPressState());
-        u8g2.setCursor(64, 55);u8g2.print(GPSdata.lat, 4);u8g2.print(F(","));u8g2.print(GPSdata.lon, 4);
-        u8g2.setCursor(64, 62);u8g2.print(F("mainv4_live"));
+        u8g2.setCursor(64, 15);u8g2.print(F("Sicaklik: "));u8g2.print(temperature);u8g2.println(F(" C"));
+        u8g2.setCursor(64, 25);u8g2.print(F("Kapak: "));u8g2.println(getCoverState());
+        u8g2.setCursor(75, 35);u8g2.print(F("Kapi: "));u8g2.println(getDoorState());
+        u8g2.setCursor(64, 42);u8g2.print(F("M.Kilit: "));u8g2.println(getMagneticLockState());
+        u8g2.setCursor(64, 50);u8g2.print(F("Pres: "));u8g2.println(getPressState());
+        u8g2.setCursor(64, 56);u8g2.print(F("Pres Sayisi: "));u8g2.println(totalPressCount);
+        u8g2.setCursor(64, 62);u8g2.print(F("mainv5_live"));
 
     } while (u8g2.nextPage());
 }
@@ -1310,108 +1277,108 @@ void updateLiveDisplay()
     String displayMessage = "";
     switch (displayState)
     {
-    case UNDERVOLTAGE:
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(30,30,"DUSUK");
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(27,50,"VOLTAJ");
-        u8g2.setFont(u8g2_font_ncenB12_tr);
-        u8g2.drawStr(46,13,". .");
-        u8g2.drawStr(63,35,".");
-        u8g2.drawStr(75,13,". .");
-        u8g2.sendBuffer();
-        break;
-    case OVERHEATED:
-        u8g2.clearBuffer();
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(25,30,"YUKSEK");
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(17,50,"SICAKLIK");
-        u8g2.setFont(u8g2_font_ncenB12_tr);
-        u8g2.drawStr(40,13,". .");
-        u8g2.sendBuffer();
-        break;
-    case DOOR_AND_COVER_CLOSED:
-        if (millis() - displayCheckTime < 10000)
-        {
-            u8g2.clearBuffer(); 
-            u8g2.setFont(u8g2_font_logisoso34_tf);  
-            u8g2.drawStr(5,41,"PENDIK"); 
-            u8g2.setFont(u8g2_font_logisoso34_tf); 
-            u8g2.drawStr(90,5,".");
-            u8g2.setFont(u8g2_font_ncenB14_tr);
-            u8g2.drawStr(2,64,"BELEDIYESI");
-            u8g2.setFont(u8g2_font_logisoso34_tf); 
-            u8g2.drawStr(67,48,".");
-            u8g2.drawStr(116,48,".");
-            u8g2.sendBuffer();
-        } else if (millis() - displayCheckTime < 20000) {
-            displayMessage = getLocalDateTime();
+        case UNDERVOLTAGE:
             u8g2.clearBuffer();
-            // u8g2.setFont(u8g2_font_6x13B_tr); //u8g2_font_t0_11_tr
-            u8g2.setFont(u8g2_font_6x13B_tr);
-            u8g2.drawStr(7, 20,displayMessage.c_str());
-            u8g2.setFont(u8g2_font_ncenB08_tr);
-            u8g2.drawStr(5, 40, "DOLULUK");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(30,30,"DUSUK");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(27,50,"VOLTAJ");
             u8g2.setFont(u8g2_font_ncenB12_tr);
-            u8g2.drawStr(15, 60, "%");
-            u8g2.drawStr(30, 60, String(occupancy).c_str());
-
-            u8g2.setFont(u8g2_font_ncenB08_tr);
-            u8g2.drawStr(69,40,"SICAKLIK ");
-            u8g2.setFont(u8g2_font_ncenB12_tr);
-            u8g2.drawStr(75, 60, String((int)temperature).c_str());
-            u8g2.setFont(u8g2_font_ncenB08_tr);
-            u8g2.drawStr(95,53,"o");
-            u8g2.setFont(u8g2_font_ncenB12_tr);
-            u8g2.drawStr(102,60,"C");  
-            
+            u8g2.drawStr(46,13,". .");
+            u8g2.drawStr(63,35,".");
+            u8g2.drawStr(75,13,". .");
             u8g2.sendBuffer();
-        } else {
-            displayCheckTime = millis();
-        }
-        break;
-    case PRESS_WORKING:
-        u8g2.clearBuffer();    
-        u8g2.setFont(u8g2_font_ncenB18_tr); 
-        u8g2.drawStr(25,30,"PRES");
-        u8g2.setFont(u8g2_font_ncenB14_tr); 
-        u8g2.drawStr(5,55,"YAPILIYOR");
-        u8g2.sendBuffer();
-        break;
-    case DOOR_OPENED_COVER_CLOSED:
-        u8g2.clearBuffer();                
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(40,30,"KAPI");
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(30,50,"ACILDI");
-        u8g2.setFont(u8g2_font_ncenB12_tr);
-        u8g2.drawStr(48,55,".");
-        u8g2.sendBuffer(); 
-        break;
-    case DOOR_CLOSED_COVER_OPENED:
-        u8g2.clearBuffer();                
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(30,30,"KAPAK");
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(30,50,"ACILDI");
-        u8g2.setFont(u8g2_font_ncenB12_tr);
-        u8g2.drawStr(48,55,".");
-        u8g2.sendBuffer(); 
-        break;
-    case DOOR_AND_COVER_OPENED:
-        u8g2.clearBuffer();                
-        u8g2.setFont(u8g2_font_ncenB10_tr);
-        u8g2.drawStr(3,30,"KAPAK VE KAPI");
-        u8g2.setFont(u8g2_font_ncenB14_tr);
-        u8g2.drawStr(30,50,"ACILDI");
-        u8g2.setFont(u8g2_font_ncenB12_tr);
-        u8g2.drawStr(48,55,".");
-        u8g2.sendBuffer();
-        break;
-    default:
-        break;
+            break;
+        case OVERHEATED:
+            u8g2.clearBuffer();
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(25,30,"YUKSEK");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(17,50,"SICAKLIK");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(40,13,". .");
+            u8g2.sendBuffer();
+            break;
+        case DOOR_AND_COVER_CLOSED:
+            if (millis() - displayCheckTime < 10000)
+            {
+                u8g2.clearBuffer(); 
+                u8g2.setFont(u8g2_font_logisoso34_tf);  
+                u8g2.drawStr(5,41,"PENDIK"); 
+                u8g2.setFont(u8g2_font_logisoso34_tf); 
+                u8g2.drawStr(90,5,".");
+                u8g2.setFont(u8g2_font_ncenB14_tr);
+                u8g2.drawStr(2,64,"BELEDIYESI");
+                u8g2.setFont(u8g2_font_logisoso34_tf); 
+                u8g2.drawStr(67,48,".");
+                u8g2.drawStr(116,48,".");
+                u8g2.sendBuffer();
+            } else if (millis() - displayCheckTime < 20000) {
+                displayMessage = getLocalDateTime();
+                u8g2.clearBuffer();
+                // u8g2.setFont(u8g2_font_6x13B_tr); //u8g2_font_t0_11_tr
+                u8g2.setFont(u8g2_font_6x13B_tr);
+                u8g2.drawStr(7, 20,displayMessage.c_str());
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(5, 40, "DOLULUK");
+                u8g2.setFont(u8g2_font_ncenB12_tr);
+                u8g2.drawStr(15, 60, "%");
+                u8g2.drawStr(30, 60, String(occupancy).c_str());
+
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(69,40,"SICAKLIK ");
+                u8g2.setFont(u8g2_font_ncenB12_tr);
+                u8g2.drawStr(75, 60, String((int)temperature).c_str());
+                u8g2.setFont(u8g2_font_ncenB08_tr);
+                u8g2.drawStr(95,53,"o");
+                u8g2.setFont(u8g2_font_ncenB12_tr);
+                u8g2.drawStr(102,60,"C");  
+                
+                u8g2.sendBuffer();
+            } else {
+                displayCheckTime = millis();
+            }
+            break;
+        case PRESS_WORKING:
+            u8g2.clearBuffer();    
+            u8g2.setFont(u8g2_font_ncenB18_tr); 
+            u8g2.drawStr(25,30,"PRES");
+            u8g2.setFont(u8g2_font_ncenB14_tr); 
+            u8g2.drawStr(5,55,"YAPILIYOR");
+            u8g2.sendBuffer();
+            break;
+        case DOOR_OPENED_COVER_CLOSED:
+            u8g2.clearBuffer();                
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(40,30,"KAPI");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(30,50,"ACILDI");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(48,55,".");
+            u8g2.sendBuffer(); 
+            break;
+        case DOOR_CLOSED_COVER_OPENED:
+            u8g2.clearBuffer();                
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(30,30,"KAPAK");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(30,50,"ACILDI");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(48,55,".");
+            u8g2.sendBuffer(); 
+            break;
+        case DOOR_AND_COVER_OPENED:
+            u8g2.clearBuffer();                
+            u8g2.setFont(u8g2_font_ncenB10_tr);
+            u8g2.drawStr(3,30,"KAPAK VE KAPI");
+            u8g2.setFont(u8g2_font_ncenB14_tr);
+            u8g2.drawStr(30,50,"ACILDI");
+            u8g2.setFont(u8g2_font_ncenB12_tr);
+            u8g2.drawStr(48,55,".");
+            u8g2.sendBuffer();
+            break;
+        default:
+            break;
     }
 }
 
@@ -1420,4 +1387,42 @@ void drawProgressBar(const int x, const int y, const int width, const int height
     u8g2.drawFrame(x, y, width, height);
     u8g2.drawBox(x, y, width * progress / 100, height);
     u8g2.sendBuffer();
+}
+
+String getWorkingTime(){
+    String workingTime = "";
+    unsigned long workingTimeInSec = millis() / 1000;
+    unsigned long workingTimeInMin = workingTimeInSec / 60;
+    int workingTimeInHour = workingTimeInMin / 60;
+    const int workingTimeInDay = workingTimeInHour / 24;
+    workingTimeInSec = workingTimeInSec % 60;
+    workingTimeInMin = workingTimeInMin % 60;
+    workingTimeInHour = workingTimeInHour % 24;
+    workingTime = String(workingTimeInDay) + F(" Gun ") 
+                + String(getDigits(workingTimeInHour)) + F(":") 
+                + String(getDigits(workingTimeInMin)) + F(":") 
+                + String(getDigits(workingTimeInSec));
+    return workingTime;
+}
+
+int send_message(const char * str, int len)
+{
+	char num[4];
+    if(len > 0){
+		sim808_send_cmd("AT+CIPSEND=");
+		itoa(len, num, 10);
+		sim808_send_cmd(num);
+		if(!sim808_check_with_cmd("\r\n",">",CMD)) {
+            return 0;
+        }
+        sim808_send_cmd(str);
+        sim808_send_End_Mark();
+    }
+    return len;
+}
+
+bool isINA226connected()
+{
+  Wire.beginTransmission(INA226_ADDR);
+  return (Wire.endTransmission() == 0);
 }

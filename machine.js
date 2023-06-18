@@ -20,7 +20,7 @@ function onMessage(socket, message) {
         }
         let imei = message.split(":")[1].trim();
 
-        sql.dbGetFirst("SELECT user_id,imei FROM container WHERE imei = ?", [imei]).then(res => {
+        sql.dbGetFirst("SELECT user_id,imei,serial_number FROM container WHERE imei = ?", [imei]).then(res => {
             if (res) {
                 for (let prob in tcpClients) {
                     if (tcpClients[prob].imei.toString() === imei.toString()) {
@@ -29,10 +29,11 @@ function onMessage(socket, message) {
                     }
                 }
                 socket.write('OK:1\n');
-                console.log("DEVICE REGISTERED! USER => " + res.user_id + " IMEI => " + imei + " SOCKET => " + socket.id);
                 socket.imei = imei;
                 socket.isAlive = true;
                 socket.user = res.user_id;
+                socket.name = res.serial_number;
+                console.log("DEVICE CONNECTED! USER => " + socket.user + " NAME => " + socket.name);
                 tcpClients[socket.id] = socket;
                 sql.dbi("INSERT INTO container_log (user_id, param, value, ip) VALUES (?,?,?,?)",
                     [socket.user, "IMEI", imei, socket.remoteAddress]);
@@ -66,14 +67,17 @@ function onMessage(socket, message) {
                 case 'PRES DURUMU':
                 case 'Pres':
                     if (value === 'Devre disi') {
-                        sql.dbi("UPDATE container SET is_full=? WHERE user_id = ?", [1, socket.user]);
+                        sql.dbi("UPDATE container SET is_full = 1 WHERE user_id = ?", [socket.user]);
+                    } else if (value === 'Yapildi') {
+                        sql.dbi("UPDATE container SET total_press = total_press+1 WHERE user_id = ?", [socket.user]);
                     } else {
-                        sql.dbi("UPDATE container SET is_full=? WHERE user_id = ?", [0, socket.user]);
+                        sql.dbi("UPDATE container SET is_full = 0 WHERE user_id = ?", [socket.user]);
                     }
                     break;
                 case 'Manyetik Kilit':
                 case 'Akım':
                 case 'Yerel Zaman':
+                case 'Çalışma Zamanı':
                     break;
                 case 'KONUM':
                 case 'Konum':
@@ -113,7 +117,12 @@ function onMessage(socket, message) {
                 case 'Kapı':
                     // KAPAK:Acik
                     if (value === 'Acik') {
-                        sql.dbi("UPDATE container SET is_open = 1,last_opened=CURRENT_TIMESTAMP WHERE user_id = ?", [socket.user]);
+                        sql.db("SELECT is_open FROM container WHERE user_id = ?", [socket.user])
+                        .then(res => {
+                            if (res.is_open !== 1) {
+                                sql.dbi("UPDATE container SET is_open = 1,last_opened=CURRENT_TIMESTAMP WHERE user_id = ?", [socket.user]);
+                            }
+                        });
                     } else {
                         sql.dbi("UPDATE container SET is_open = 0 WHERE user_id = ?", [socket.user]);
                     }
